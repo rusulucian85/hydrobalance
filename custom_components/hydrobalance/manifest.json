@@ -3,7 +3,7 @@
   "name": "HydroBalance",
   "codeowners": ["@rusulucian85"],
   "config_flow": true,
-  "dependencies": ["sun"],
+  "dependencies": ["sun", "http", "frontend"],
   "documentation": "https://github.com/rusulucian85/hydrobalance",
   "integration_type": "service",
   "iot_class": "calculated",

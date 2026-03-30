@@ -4,14 +4,27 @@ from __future__ import annotations
 
 import voluptuous as vol
 
+from homeassistant.components import frontend
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 
+from .api import async_register_api
 from .const import DOMAIN, LOGGER, PLATFORMS
 from .coordinator import HydroBalanceCoordinator
 
 type HydroBalanceConfigEntry = ConfigEntry
+
+PANEL_URL = "/hydrobalance-panel"
+PANEL_TITLE = "HydroBalance"
+PANEL_ICON = "mdi:water-pump"
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up the HydroBalance component."""
+    # Register WebSocket API commands
+    async_register_api(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -33,6 +46,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register services
     _register_services(hass, coordinator)
 
+    # Register panel (only once)
+    if len(hass.data[DOMAIN]) == 1:
+        hass.http.register_static_path(
+            PANEL_URL,
+            hass.config.path(f"custom_components/{DOMAIN}/panel"),
+            cache_headers=False,
+        )
+        frontend.async_register_built_in_panel(
+            hass,
+            component_name="iframe",
+            sidebar_title=PANEL_TITLE,
+            sidebar_icon=PANEL_ICON,
+            frontend_url_path=DOMAIN,
+            config={"url": f"{PANEL_URL}/index.html"},
+            require_admin=False,
+        )
+
     LOGGER.info("HydroBalance setup complete for: %s", entry.title)
     return True
 
@@ -49,10 +79,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
-    # Remove services if no more entries
+    # Remove services and panel if no more entries
     if not hass.data[DOMAIN]:
         for service in ("force_water", "skip_day", "reset_deficit"):
             hass.services.async_remove(DOMAIN, service)
+        frontend.async_remove_panel(hass, DOMAIN)
 
     return unload_ok
 

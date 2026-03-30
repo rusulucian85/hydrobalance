@@ -102,6 +102,14 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._zone_deficits: dict[str, float] = {}
         self._last_calc_date: str | None = None
 
+        # Panel-managed configuration (zones, soil, strategy, sensors)
+        self._store_data: dict[str, Any] = {
+            "zones": [],
+            "soil_type": "clay",
+            "strategy": "balanced",
+            "sensors": {},
+        }
+
     @property
     def config(self) -> dict[str, Any]:
         """Get config entry data."""
@@ -109,18 +117,18 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @property
     def zones(self) -> list[dict[str, Any]]:
-        """Get zone configurations."""
-        return self.config.get(CONF_ZONES, [])
+        """Get zone configurations from panel storage."""
+        return self._store_data.get("zones", [])
 
     @property
     def soil_type(self) -> str:
-        """Get system soil type."""
-        return self.config.get(CONF_SOIL_TYPE, "clay")
+        """Get system soil type from panel storage."""
+        return self._store_data.get("soil_type", "clay")
 
     @property
     def strategy(self) -> dict[str, Any]:
-        """Get current strategy config."""
-        key = self.config.get(CONF_STRATEGY, "balanced")
+        """Get current strategy config from panel storage."""
+        key = self._store_data.get("strategy", "balanced")
         return STRATEGIES.get(key, STRATEGIES["balanced"])
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
@@ -140,7 +148,12 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if stored.get("today")
                 else None
             )
-            LOGGER.info("Loaded persisted data: deficits=%s", self._zone_deficits)
+            # Load panel-managed config
+            self._store_data["zones"] = stored.get("zones", [])
+            self._store_data["soil_type"] = stored.get("soil_type", "clay")
+            self._store_data["strategy"] = stored.get("strategy", "balanced")
+            self._store_data["sensors"] = stored.get("sensors", {})
+            LOGGER.info("Loaded persisted data: deficits=%s, zones=%d", self._zone_deficits, len(self.zones))
 
         # Ensure all zones have a deficit entry
         for zone in self.zones:
@@ -256,7 +269,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _read_sensor(self, config_key: str) -> float | None:
         """Read a sensor value from HA state."""
-        entity_id = self.config.get(config_key)
+        # Check panel sensors first, then config entry
+        entity_id = self._store_data.get("sensors", {}).get(config_key) or self.config.get(config_key)
         if not entity_id:
             return None
         state = self.hass.states.get(entity_id)
@@ -645,6 +659,10 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "switch", "turn_off", {"entity_id": switch_entity}
                 )
 
+    async def async_save_panel_config(self) -> None:
+        """Save panel configuration (called from WebSocket API)."""
+        await self._persist()
+
     async def _persist(self) -> None:
         """Save state to persistent storage."""
         await self._store.async_save({
@@ -655,4 +673,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "daily_peak_uv": self._daily_peak_uv,
             "daily_rain": self._daily_rain,
             "today": self._today.isoformat() if self._today else None,
+            # Panel-managed config
+            "zones": self._store_data.get("zones", []),
+            "soil_type": self._store_data.get("soil_type", "clay"),
+            "strategy": self._store_data.get("strategy", "balanced"),
+            "sensors": self._store_data.get("sensors", {}),
         })
