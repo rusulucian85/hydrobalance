@@ -1,0 +1,38 @@
+force_water:
+  name: Force Water
+  description: Force immediate watering for a zone or all zones.
+  fields:
+    zone_id:
+      name: Zone ID
+      description: The zone to water. Leave empty for all zones.
+      required: false
+      example: "back"
+      selector:
+        text:
+    mm_to_apply:
+      name: Amount (mm)
+      description: How much water to apply. Defaults to max per cycle.
+      required: false
+      example: 5.0
+      selector:
+        number:
+          min: 1
+          max: 15
+          step: 0.5
+          unit_of_measurement: mm
+
+skip_day:
+  name: Skip Day
+  description: Skip the next scheduled watering check.
+
+reset_deficit:
+  name: Reset Deficit
+  description: Reset water deficit to 0 for a zone or all zones.
+  fields:
+    zone_id:
+      name: Zone ID
+      description: The zone to reset. Leave empty for all zones.
+      required: false
+      example: "back"
+      selector:
+        text:

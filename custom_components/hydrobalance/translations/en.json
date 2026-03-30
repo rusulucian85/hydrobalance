@@ -1,0 +1,71 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "System Setup",
+        "description": "Configure your HydroBalance irrigation system.",
+        "data": {
+          "system_name": "System Name",
+          "sensor_temperature": "Temperature Sensor",
+          "sensor_temperature_min": "Min Temperature Sensor (optional)",
+          "sensor_temperature_max": "Max Temperature Sensor (optional)",
+          "sensor_humidity": "Humidity Sensor",
+          "sensor_wind_speed": "Wind Speed Sensor",
+          "sensor_uv_index": "UV Index Sensor",
+          "sensor_rain": "Rain Sensor",
+          "sensor_rain_forecast": "Rain Forecast Sensor (optional)",
+          "use_forecast": "Use weather forecast to skip watering"
+        }
+      },
+      "soil": {
+        "title": "Soil & Strategy",
+        "description": "Select your soil type and watering strategy.",
+        "data": {
+          "soil_type": "Soil Type",
+          "strategy": "Watering Strategy"
+        }
+      },
+      "zones_menu": {
+        "title": "Zone Management",
+        "description": "Zones configured: {zone_count}\n{zone_list}",
+        "data": {
+          "action": "Action"
+        }
+      },
+      "zone_config": {
+        "title": "Zone Configuration",
+        "description": "Configure a watering zone.",
+        "data": {
+          "name": "Zone Name",
+          "switch_entity": "Sprinkler Switch",
+          "sprinkler_rate": "Sprinkler Rate",
+          "max_per_cycle": "Max Water Per Cycle",
+          "sun_exposure_mode": "Sun Exposure Mode",
+          "sun_exposure": "Sun Exposure (manual)",
+          "orientation": "Zone Orientation (relative to building)",
+          "obstacle_height": "Building/Obstacle Height",
+          "obstacle_distance": "Distance to Obstacle",
+          "soil_override": "Soil Type Override"
+        }
+      },
+      "summary": {
+        "title": "Setup Summary",
+        "description": "**{system_name}**\n\nSoil: {soil_type}\nStrategy: {strategy}\nZones: {zone_count} ({zone_names})\n\nClick Submit to finish setup."
+      }
+    },
+    "error": {
+      "no_zones": "Add at least one zone before continuing."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "HydroBalance Settings",
+        "data": {
+          "soil_type": "Soil Type",
+          "strategy": "Watering Strategy"
+        }
+      }
+    }
+  }
+}
