@@ -3,17 +3,10 @@
     "step": {
       "user": {
         "title": "System Setup",
-        "description": "Configure your HydroBalance irrigation system.",
+        "description": "Select your weather integration. Sensors will be auto-discovered.",
         "data": {
           "system_name": "System Name",
-          "sensor_temperature": "Temperature Sensor",
-          "sensor_temperature_min": "Min Temperature Sensor (optional)",
-          "sensor_temperature_max": "Max Temperature Sensor (optional)",
-          "sensor_humidity": "Humidity Sensor",
-          "sensor_wind_speed": "Wind Speed Sensor",
-          "sensor_uv_index": "UV Index Sensor",
-          "sensor_rain": "Rain Sensor",
-          "sensor_rain_forecast": "Rain Forecast Sensor (optional)",
+          "weather_entity": "Weather Integration",
           "use_forecast": "Use weather forecast to skip watering"
         }
       },
@@ -54,7 +47,8 @@
       }
     },
     "error": {
-      "no_zones": "Add at least one zone before continuing."
+      "no_zones": "Add at least one zone before continuing.",
+      "no_sensors": "Could not find weather sensors from this integration. Try a different weather entity."
     }
   },
   "options": {

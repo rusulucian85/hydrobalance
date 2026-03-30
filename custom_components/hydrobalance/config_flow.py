@@ -21,6 +21,7 @@ from .const import (
     DEFAULT_SPRINKLER_RATE,
     DEFAULT_MAX_PER_CYCLE,
     CONF_SYSTEM_NAME,
+    CONF_WEATHER_ENTITY,
     CONF_SENSOR_TEMPERATURE,
     CONF_SENSOR_TEMPERATURE_MIN,
     CONF_SENSOR_TEMPERATURE_MAX,
@@ -64,51 +65,144 @@ class HydroBalanceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle system setup step."""
+        """Handle system setup step — select weather integration."""
+        errors = {}
+
         if user_input is not None:
-            self._data.update(user_input)
-            return await self.async_step_soil()
+            weather_entity = user_input.get(CONF_WEATHER_ENTITY)
+            self._data[CONF_SYSTEM_NAME] = user_input.get(CONF_SYSTEM_NAME, "My Garden")
+            self._data[CONF_WEATHER_ENTITY] = weather_entity
+            self._data[CONF_USE_FORECAST] = user_input.get(CONF_USE_FORECAST, True)
+
+            # Auto-discover sensors from the same integration
+            sensors = await self._discover_weather_sensors(weather_entity)
+            if not sensors.get(CONF_SENSOR_TEMPERATURE):
+                errors["base"] = "no_sensors"
+            else:
+                self._data.update(sensors)
+                LOGGER.info("Auto-discovered sensors: %s", sensors)
+                return await self.async_step_soil()
 
         schema = vol.Schema({
             vol.Required(CONF_SYSTEM_NAME, default="My Garden"): str,
-            vol.Required(CONF_SENSOR_TEMPERATURE): selector.EntitySelector(
-                selector.EntitySelectorConfig(
-                    domain="sensor", device_class="temperature"
-                )
-            ),
-            vol.Optional(CONF_SENSOR_TEMPERATURE_MIN): selector.EntitySelector(
-                selector.EntitySelectorConfig(
-                    domain="sensor", device_class="temperature"
-                )
-            ),
-            vol.Optional(CONF_SENSOR_TEMPERATURE_MAX): selector.EntitySelector(
-                selector.EntitySelectorConfig(
-                    domain="sensor", device_class="temperature"
-                )
-            ),
-            vol.Required(CONF_SENSOR_HUMIDITY): selector.EntitySelector(
-                selector.EntitySelectorConfig(
-                    domain="sensor", device_class="humidity"
-                )
-            ),
-            vol.Required(CONF_SENSOR_WIND_SPEED): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor")
-            ),
-            vol.Required(CONF_SENSOR_UV_INDEX): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor")
-            ),
-            vol.Required(CONF_SENSOR_RAIN): selector.EntitySelector(
-                selector.EntitySelectorConfig(
-                    domain="sensor", device_class="precipitation"
-                )
-            ),
-            vol.Optional(CONF_SENSOR_RAIN_FORECAST): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor")
+            vol.Required(CONF_WEATHER_ENTITY): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="weather")
             ),
             vol.Optional(CONF_USE_FORECAST, default=True): bool,
         })
 
-        return self.async_show_form(step_id="user", data_schema=schema)
+        return self.async_show_form(
+            step_id="user", data_schema=schema, errors=errors
+        )
+
+    async def _discover_weather_sensors(self, weather_entity_id: str) -> dict[str, str | None]:
+        """Auto-discover sensors from the same integration as the weather entity."""
+        entity_registry = self.hass.helpers.entity_registry.async_get(self.hass)
+        weather_entry = entity_registry.async_get(weather_entity_id)
+
+        sensors: dict[str, str | None] = {
+            CONF_SENSOR_TEMPERATURE: None,
+            CONF_SENSOR_TEMPERATURE_MIN: None,
+            CONF_SENSOR_TEMPERATURE_MAX: None,
+            CONF_SENSOR_HUMIDITY: None,
+            CONF_SENSOR_WIND_SPEED: None,
+            CONF_SENSOR_UV_INDEX: None,
+            CONF_SENSOR_RAIN: None,
+            CONF_SENSOR_RAIN_FORECAST: None,
+        }
+
+        if not weather_entry or not weather_entry.config_entry_id:
+            # Fallback: try to match by entity_id prefix
+            prefix = weather_entity_id.replace("weather.", "sensor.").split("_")[0]
+            return self._discover_by_prefix(prefix, sensors)
+
+        # Find all sensor entities from the same config entry
+        config_entry_id = weather_entry.config_entry_id
+        all_entities = entity_registry.entities
+
+        candidates = []
+        for entity_id, entry in all_entities.items():
+            if (
+                entry.config_entry_id == config_entry_id
+                and entry.domain == "sensor"
+            ):
+                state = self.hass.states.get(entity_id)
+                candidates.append((entity_id, entry, state))
+
+        return self._match_sensors(candidates, sensors)
+
+    def _discover_by_prefix(
+        self, prefix: str, sensors: dict[str, str | None]
+    ) -> dict[str, str | None]:
+        """Discover sensors by entity_id prefix matching."""
+        all_states = self.hass.states.async_all("sensor")
+
+        candidates = []
+        for state in all_states:
+            if prefix in state.entity_id:
+                candidates.append((state.entity_id, None, state))
+
+        return self._match_sensors(candidates, sensors)
+
+    def _match_sensors(
+        self,
+        candidates: list,
+        sensors: dict[str, str | None],
+    ) -> dict[str, str | None]:
+        """Match candidate entities to sensor roles by device_class and name patterns."""
+        for entity_id, entry, state in candidates:
+            if state is None:
+                continue
+
+            device_class = state.attributes.get("device_class", "")
+            eid_lower = entity_id.lower()
+            name_lower = (state.attributes.get("friendly_name") or "").lower()
+            unit = state.attributes.get("unit_of_measurement", "")
+
+            # Temperature (current)
+            if device_class == "temperature" and not sensors[CONF_SENSOR_TEMPERATURE]:
+                if "forecast" not in eid_lower and "min" not in eid_lower and "max" not in eid_lower:
+                    sensors[CONF_SENSOR_TEMPERATURE] = entity_id
+
+            # Temperature min forecast
+            if device_class == "temperature" and not sensors[CONF_SENSOR_TEMPERATURE_MIN]:
+                if "min" in eid_lower or "min" in name_lower:
+                    sensors[CONF_SENSOR_TEMPERATURE_MIN] = entity_id
+
+            # Temperature max forecast
+            if device_class == "temperature" and not sensors[CONF_SENSOR_TEMPERATURE_MAX]:
+                if "max" in eid_lower or "max" in name_lower:
+                    sensors[CONF_SENSOR_TEMPERATURE_MAX] = entity_id
+
+            # Humidity
+            if device_class == "humidity" and not sensors[CONF_SENSOR_HUMIDITY]:
+                sensors[CONF_SENSOR_HUMIDITY] = entity_id
+
+            # Wind speed
+            if not sensors[CONF_SENSOR_WIND_SPEED]:
+                if "wind" in eid_lower and "speed" in eid_lower:
+                    sensors[CONF_SENSOR_WIND_SPEED] = entity_id
+                elif "wind" in eid_lower and ("km" in unit or "m/s" in unit):
+                    sensors[CONF_SENSOR_WIND_SPEED] = entity_id
+
+            # UV index
+            if not sensors[CONF_SENSOR_UV_INDEX]:
+                if "uv" in eid_lower:
+                    sensors[CONF_SENSOR_UV_INDEX] = entity_id
+
+            # Rain
+            if not sensors[CONF_SENSOR_RAIN]:
+                if ("rain" in eid_lower or device_class == "precipitation") and "forecast" not in eid_lower:
+                    sensors[CONF_SENSOR_RAIN] = entity_id
+
+            # Rain forecast
+            if not sensors[CONF_SENSOR_RAIN_FORECAST]:
+                if "rain" in eid_lower and "forecast" in eid_lower:
+                    sensors[CONF_SENSOR_RAIN_FORECAST] = entity_id
+                elif "precipitation" in eid_lower and ("forecast" in eid_lower or "24" in eid_lower):
+                    sensors[CONF_SENSOR_RAIN_FORECAST] = entity_id
+
+        return sensors
 
     # ─── Step 2: Soil & Strategy ──────────────────────────────────────────────
 
