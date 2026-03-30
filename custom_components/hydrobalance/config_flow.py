@@ -9,7 +9,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.core import callback
-from homeassistant.helpers import selector
+from homeassistant.helpers import entity_registry as er, selector
 
 from .const import (
     DOMAIN,
@@ -97,7 +97,7 @@ class HydroBalanceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def _discover_weather_sensors(self, weather_entity_id: str) -> dict[str, str | None]:
         """Auto-discover sensors from the same integration as the weather entity."""
-        entity_registry = self.hass.helpers.entity_registry.async_get(self.hass)
+        entity_registry = er.async_get(self.hass)
         weather_entry = entity_registry.async_get(weather_entity_id)
 
         sensors: dict[str, str | None] = {
@@ -118,16 +118,14 @@ class HydroBalanceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Find all sensor entities from the same config entry
         config_entry_id = weather_entry.config_entry_id
-        all_entities = entity_registry.entities
-
         candidates = []
-        for entity_id, entry in all_entities.items():
+        for entry in entity_registry.entities.values():
             if (
                 entry.config_entry_id == config_entry_id
                 and entry.domain == "sensor"
             ):
-                state = self.hass.states.get(entity_id)
-                candidates.append((entity_id, entry, state))
+                state = self.hass.states.get(entry.entity_id)
+                candidates.append((entry.entity_id, entry, state))
 
         return self._match_sensors(candidates, sensors)
 
