@@ -245,7 +245,7 @@
   <div class="header">
     <div>
       <h1>HydroBalance</h1>
-      <div class="version">v0.1.0 &mdash; Smart Irrigation</div>
+      <div class="version">v0.2.0 &mdash; Smart Irrigation</div>
     </div>
   </div>
 
@@ -266,6 +266,14 @@
         <div class="stat-box"><div class="value" id="stat-tmin">--</div><div class="label">T min (&deg;C)</div></div>
         <div class="stat-box"><div class="value" id="stat-tmax">--</div><div class="label">T max (&deg;C)</div></div>
         <div class="stat-box"><div class="value" id="stat-uv">--</div><div class="label">Peak UV</div></div>
+      </div>
+    </div>
+
+    <div class="card hidden" id="soil-moisture-card">
+      <h2>Soil Moisture</h2>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;">
+        <span id="soil-moisture-value" style="font-size:1.6em;font-weight:700;">--</span>
+        <span id="soil-moisture-meta" style="font-size:0.85em;color:var(--text-secondary);"></span>
       </div>
     </div>
 
@@ -314,6 +322,25 @@
       </div>
       <div class="actions">
         <button class="btn btn-outline btn-sm" onclick="discoverSensors()">Re-discover Sensors</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Soil Moisture Sensor</h2>
+      <p style="font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;">
+        Optional. When set, watering is skipped if measured soil moisture is above the threshold &mdash;
+        real-sensor feedback overrides the ET estimate.
+      </p>
+      <div class="form-group">
+        <label>Sensor Entity</label>
+        <input type="text" id="soil-moisture-sensor" placeholder="sensor.garden_sensor_soil_moisture">
+      </div>
+      <div class="form-group">
+        <label>Skip Threshold (% VWC)</label>
+        <input type="number" id="moisture-threshold" value="40" step="1" min="0" max="100">
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" onclick="saveMoistureConfig()">Save Soil Moisture</button>
       </div>
     </div>
 
@@ -525,6 +552,21 @@ function renderDashboard() {
   document.getElementById('stat-tmax').textContent = daily.tmax != null ? daily.tmax.toFixed(1) : '--';
   document.getElementById('stat-uv').textContent = daily.peak_uv != null ? daily.peak_uv.toFixed(1) : '--';
 
+  // Soil moisture card (only shown when sensor configured)
+  const soil = s.soil || {};
+  const moistureCard = document.getElementById('soil-moisture-card');
+  if (soil.moisture != null) {
+    moistureCard.classList.remove('hidden');
+    const threshold = soil.skip_threshold ?? 40;
+    const valueEl = document.getElementById('soil-moisture-value');
+    valueEl.textContent = soil.moisture.toFixed(1) + ' %';
+    valueEl.style.color = soil.moisture > threshold ? 'var(--success)' : 'var(--primary)';
+    document.getElementById('soil-moisture-meta').textContent =
+      `skip when ≥ ${threshold}%` + (soil.moisture > threshold ? ' — watering skipped' : '');
+  } else {
+    moistureCard.classList.add('hidden');
+  }
+
   // Zone status list
   const zones = s.zones || {};
   const container = document.getElementById('zone-status-list');
@@ -610,8 +652,8 @@ function renderSettings() {
   document.getElementById('soil-type').value = entry?.soil_type || 'clay';
   document.getElementById('strategy').value = entry?.strategy || 'balanced';
 
-  // Render sensor list
-  const sensors = entry?.config || {};
+  // Render sensor list (panel-managed, not config_entry data)
+  const sensors = entry?.sensors || {};
   const sensorKeys = [
     ['sensor_temperature', 'Temperature'],
     ['sensor_temperature_min', 'Temperature Min'],
@@ -633,6 +675,10 @@ function renderSettings() {
       </div>`;
   }
   container.innerHTML = html;
+
+  // Soil moisture
+  document.getElementById('soil-moisture-sensor').value = sensors.sensor_soil_moisture || '';
+  document.getElementById('moisture-threshold').value = entry?.moisture_skip_threshold ?? 40;
 }
 
 // ═══ TABS ═══
@@ -772,6 +818,29 @@ async function saveSettings() {
       strategy: document.getElementById('strategy').value,
     });
     toast('Settings saved!');
+    await loadAll();
+  } catch (e) {
+    toast('Error: ' + (e.message || e));
+  }
+}
+
+async function saveMoistureConfig() {
+  const entry = config[currentEntryId];
+  const sensors = { ...(entry?.sensors || {}) };
+  const moistureEntity = document.getElementById('soil-moisture-sensor').value.trim();
+  if (moistureEntity) {
+    sensors.sensor_soil_moisture = moistureEntity;
+  } else {
+    delete sensors.sensor_soil_moisture;
+  }
+  const threshold = parseFloat(document.getElementById('moisture-threshold').value);
+  try {
+    await sendWS('hydrobalance/config/save', {
+      entry_id: currentEntryId,
+      sensors: sensors,
+      moisture_skip_threshold: isNaN(threshold) ? 40 : threshold,
+    });
+    toast('Soil moisture settings saved!');
     await loadAll();
   } catch (e) {
     toast('Error: ' + (e.message || e));

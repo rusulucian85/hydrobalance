@@ -50,6 +50,8 @@ from .const import (
     CONF_SENSOR_UV_INDEX,
     CONF_SENSOR_RAIN,
     CONF_SENSOR_RAIN_FORECAST,
+    CONF_SENSOR_SOIL_MOISTURE,
+    CONF_MOISTURE_SKIP_THRESHOLD,
     CONF_ZONE_ID,
     CONF_ZONE_SWITCH,
     CONF_ZONE_SPRINKLER_RATE,
@@ -64,6 +66,7 @@ from .const import (
     DEFAULT_SPRINKLER_RATE,
     DEFAULT_DEFICIT_THRESHOLD,
     DEFAULT_MAX_PER_CYCLE,
+    DEFAULT_MOISTURE_SKIP_THRESHOLD,
 )
 
 
@@ -108,6 +111,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "soil_type": "clay",
             "strategy": "balanced",
             "sensors": {},
+            CONF_MOISTURE_SKIP_THRESHOLD: DEFAULT_MOISTURE_SKIP_THRESHOLD,
         }
 
     @property
@@ -131,6 +135,13 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         key = self._store_data.get("strategy", "balanced")
         return STRATEGIES.get(key, STRATEGIES["balanced"])
 
+    @property
+    def moisture_skip_threshold(self) -> float:
+        """Get soil-moisture skip threshold (% VWC)."""
+        return self._store_data.get(
+            CONF_MOISTURE_SKIP_THRESHOLD, DEFAULT_MOISTURE_SKIP_THRESHOLD
+        )
+
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
     async def async_setup(self) -> None:
@@ -153,6 +164,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._store_data["soil_type"] = stored.get("soil_type", "clay")
             self._store_data["strategy"] = stored.get("strategy", "balanced")
             self._store_data["sensors"] = stored.get("sensors", {})
+            self._store_data[CONF_MOISTURE_SKIP_THRESHOLD] = stored.get(
+                CONF_MOISTURE_SKIP_THRESHOLD, DEFAULT_MOISTURE_SKIP_THRESHOLD
+            )
             LOGGER.info("Loaded persisted data: deficits=%s, zones=%d", self._zone_deficits, len(self.zones))
 
         # Ensure all zones have a deficit entry
@@ -262,6 +276,10 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._watering_queue[0] if self._watering_queue else None
                 ),
                 "skip_next": self._skip_next,
+            },
+            "soil": {
+                "moisture": self._read_sensor(CONF_SENSOR_SOIL_MOISTURE),
+                "skip_threshold": self.moisture_skip_threshold,
             },
         }
 
@@ -495,6 +513,15 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 LOGGER.info("Rain forecast %.1fmm > %.1f, skipping", forecast, RAIN_FORECAST_SKIP)
                 return
 
+        # Soil-moisture skip (real sensor feedback overrides ET estimate)
+        moisture = self._read_sensor(CONF_SENSOR_SOIL_MOISTURE)
+        if moisture is not None and moisture > self.moisture_skip_threshold:
+            LOGGER.info(
+                "Soil moisture %.1f%% > %.1f%%, skipping watering",
+                moisture, self.moisture_skip_threshold,
+            )
+            return
+
         # Build watering queue
         queue = []
         for zone in self.zones:
@@ -678,4 +705,5 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "soil_type": self._store_data.get("soil_type", "clay"),
             "strategy": self._store_data.get("strategy", "balanced"),
             "sensors": self._store_data.get("sensors", {}),
+            CONF_MOISTURE_SKIP_THRESHOLD: self.moisture_skip_threshold,
         })

@@ -39,6 +39,7 @@ def ws_get_config(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
             "soil_type": coordinator._store_data.get("soil_type", "clay"),
             "strategy": coordinator._store_data.get("strategy", "balanced"),
             "sensors": coordinator._store_data.get("sensors", {}),
+            "moisture_skip_threshold": coordinator.moisture_skip_threshold,
         }
         data[entry_id] = store_data
     connection.send_result(msg["id"], data)
@@ -51,6 +52,7 @@ def ws_get_config(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
     vol.Optional("soil_type"): str,
     vol.Optional("strategy"): str,
     vol.Optional("sensors"): dict,
+    vol.Optional("moisture_skip_threshold"): vol.Coerce(float),
 })
 @websocket_api.async_response
 async def ws_save_config(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
@@ -70,6 +72,8 @@ async def ws_save_config(hass: HomeAssistant, connection: websocket_api.ActiveCo
         coordinator._store_data["strategy"] = msg["strategy"]
     if "sensors" in msg:
         coordinator._store_data["sensors"] = msg["sensors"]
+    if "moisture_skip_threshold" in msg:
+        coordinator._store_data["moisture_skip_threshold"] = msg["moisture_skip_threshold"]
 
     await coordinator.async_save_panel_config()
     await coordinator.async_request_refresh()
@@ -102,14 +106,14 @@ def ws_discover_sensors(hass: HomeAssistant, connection: websocket_api.ActiveCon
     weather_entry = entity_registry.async_get(weather_entity_id)
 
     sensors = {
-        "temperature": None,
-        "temperature_min": None,
-        "temperature_max": None,
-        "humidity": None,
-        "wind_speed": None,
-        "uv_index": None,
-        "rain": None,
-        "rain_forecast": None,
+        "sensor_temperature": None,
+        "sensor_temperature_min": None,
+        "sensor_temperature_max": None,
+        "sensor_humidity": None,
+        "sensor_wind_speed": None,
+        "sensor_uv_index": None,
+        "sensor_rain": None,
+        "sensor_rain_forecast": None,
     }
 
     if not weather_entry or not weather_entry.config_entry_id:
@@ -130,32 +134,32 @@ def ws_discover_sensors(hass: HomeAssistant, connection: websocket_api.ActiveCon
         device_class = state.attributes.get("device_class", "")
         unit = state.attributes.get("unit_of_measurement", "")
 
-        if device_class == "temperature" and not sensors["temperature"]:
+        if device_class == "temperature" and not sensors["sensor_temperature"]:
             if "forecast" not in eid and "min" not in eid and "max" not in eid:
-                sensors["temperature"] = entry.entity_id
+                sensors["sensor_temperature"] = entry.entity_id
 
-        if device_class == "temperature" and not sensors["temperature_min"]:
+        if device_class == "temperature" and not sensors["sensor_temperature_min"]:
             if "min" in eid:
-                sensors["temperature_min"] = entry.entity_id
+                sensors["sensor_temperature_min"] = entry.entity_id
 
-        if device_class == "temperature" and not sensors["temperature_max"]:
+        if device_class == "temperature" and not sensors["sensor_temperature_max"]:
             if "max" in eid:
-                sensors["temperature_max"] = entry.entity_id
+                sensors["sensor_temperature_max"] = entry.entity_id
 
-        if device_class == "humidity" and not sensors["humidity"]:
-            sensors["humidity"] = entry.entity_id
+        if device_class == "humidity" and not sensors["sensor_humidity"]:
+            sensors["sensor_humidity"] = entry.entity_id
 
-        if not sensors["wind_speed"] and "wind" in eid and ("speed" in eid or "km" in unit or "m/s" in unit):
-            sensors["wind_speed"] = entry.entity_id
+        if not sensors["sensor_wind_speed"] and "wind" in eid and ("speed" in eid or "km" in unit or "m/s" in unit):
+            sensors["sensor_wind_speed"] = entry.entity_id
 
-        if not sensors["uv_index"] and "uv" in eid:
-            sensors["uv_index"] = entry.entity_id
+        if not sensors["sensor_uv_index"] and "uv" in eid:
+            sensors["sensor_uv_index"] = entry.entity_id
 
-        if not sensors["rain"] and ("rain" in eid or device_class == "precipitation") and "forecast" not in eid:
-            sensors["rain"] = entry.entity_id
+        if not sensors["sensor_rain"] and ("rain" in eid or device_class == "precipitation") and "forecast" not in eid:
+            sensors["sensor_rain"] = entry.entity_id
 
-        if not sensors["rain_forecast"] and ("precipitation" in eid or "rain" in eid) and ("forecast" in eid or "24" in eid):
-            sensors["rain_forecast"] = entry.entity_id
+        if not sensors["sensor_rain_forecast"] and ("precipitation" in eid or "rain" in eid) and ("forecast" in eid or "24" in eid):
+            sensors["sensor_rain_forecast"] = entry.entity_id
 
     connection.send_result(msg["id"], sensors)
 

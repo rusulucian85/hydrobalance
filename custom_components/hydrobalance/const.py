@@ -28,6 +28,7 @@ ET_MAX = 8.0
 DEFAULT_SPRINKLER_RATE = 2.0  # mm per 30 min
 DEFAULT_DEFICIT_THRESHOLD = 12.0  # mm
 DEFAULT_MAX_PER_CYCLE = 5.0  # mm
+DEFAULT_MOISTURE_SKIP_THRESHOLD = 40.0  # % VWC
 FROST_TEMP_LIMIT = 5.0  # °C
 RAIN_FORECAST_SKIP = 5.0  # mm
 DEFICIT_MIN = -20.0
@@ -117,9 +118,11 @@ CONF_SENSOR_WIND_SPEED = "sensor_wind_speed"
 CONF_SENSOR_UV_INDEX = "sensor_uv_index"
 CONF_SENSOR_RAIN = "sensor_rain"
 CONF_SENSOR_RAIN_FORECAST = "sensor_rain_forecast"
+CONF_SENSOR_SOIL_MOISTURE = "sensor_soil_moisture"
 CONF_SOIL_TYPE = "soil_type"
 CONF_STRATEGY = "strategy"
 CONF_USE_FORECAST = "use_forecast"
+CONF_MOISTURE_SKIP_THRESHOLD = "moisture_skip_threshold"
 CONF_ZONES = "zones"
 
 # Zone config keys
