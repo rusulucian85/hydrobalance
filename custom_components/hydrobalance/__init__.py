@@ -5,6 +5,7 @@ from __future__ import annotations
 import voluptuous as vol
 
 from homeassistant.components import frontend
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
@@ -48,11 +49,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Register panel (only once)
     if len(hass.data[DOMAIN]) == 1:
-        hass.http.register_static_path(
-            PANEL_URL,
-            hass.config.path(f"custom_components/{DOMAIN}/panel"),
-            cache_headers=False,
-        )
+        await hass.http.async_register_static_paths([
+            StaticPathConfig(
+                PANEL_URL,
+                hass.config.path(f"custom_components/{DOMAIN}/panel"),
+                cache_headers=False,
+            )
+        ])
         frontend.async_register_built_in_panel(
             hass,
             component_name="iframe",
