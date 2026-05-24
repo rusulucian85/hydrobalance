@@ -243,11 +243,15 @@
 </head>
 <body>
   <div class="header">
-    <div>
+    <div style="flex:1;">
       <h1>HydroBalance</h1>
-      <div class="version">v0.2.0 &mdash; Smart Irrigation</div>
+      <div class="version">v0.2.1 &mdash; Smart Irrigation</div>
     </div>
+    <div id="ws-status" style="font-size:0.75em;padding:4px 10px;border-radius:6px;color:var(--text-secondary);"></div>
   </div>
+
+  <datalist id="dl-switches"></datalist>
+  <datalist id="dl-sensors"></datalist>
 
   <div class="tabs">
     <button class="tab active" data-tab="dashboard" onclick="showTab('dashboard')">Dashboard</button>
@@ -333,7 +337,7 @@
       </p>
       <div class="form-group">
         <label>Sensor Entity</label>
-        <input type="text" id="soil-moisture-sensor" placeholder="sensor.garden_sensor_soil_moisture">
+        <input type="text" id="soil-moisture-sensor" list="dl-sensors" placeholder="sensor.garden_sensor_soil_moisture" autocapitalize="off" autocomplete="off">
       </div>
       <div class="form-group">
         <label>Skip Threshold (% VWC)</label>
@@ -382,7 +386,7 @@
       </div>
       <div class="form-group">
         <label>Sprinkler Switch Entity</label>
-        <input type="text" id="zone-switch" placeholder="switch.sprinkler_back">
+        <input type="text" id="zone-switch" list="dl-switches" placeholder="switch.sprinkler_back" autocapitalize="off" autocomplete="off">
       </div>
       <div class="form-row-3">
         <div class="form-group">
@@ -460,26 +464,60 @@
 <script>
 // ═══ STATE ═══
 let wsConnection = null;
+let wsAuthed = false;
 let msgId = 1;
 let pendingMessages = {};
 let config = {};
 let status = {};
 let currentEntryId = null;
+let entitiesCache = null;
+
+// ═══ STATUS BAR ═══
+function setStatus(msg, level) {
+  const el = document.getElementById('ws-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  if (level === 'error') {
+    el.style.background = 'var(--danger)';
+    el.style.color = 'white';
+  } else if (level === 'warn') {
+    el.style.background = 'var(--warning)';
+    el.style.color = 'white';
+  } else if (level === 'ok') {
+    el.style.background = 'transparent';
+    el.style.color = 'var(--success)';
+  } else {
+    el.style.background = 'transparent';
+    el.style.color = 'var(--text-secondary)';
+  }
+}
 
 // ═══ WEBSOCKET ═══
 function connectWS() {
+  setStatus('Connecting…');
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/api/websocket`);
   wsConnection = ws;
 
-  ws.onopen = () => {};
+  ws.onopen = () => setStatus('Authenticating…');
+  ws.onerror = () => setStatus('Connection error', 'error');
   ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
+    let msg;
+    try { msg = JSON.parse(event.data); } catch (e) { return; }
     if (msg.type === 'auth_required') {
-      // Get token from URL hash or HA auth
       const token = _getToken();
+      if (!token) {
+        setStatus('No HA auth token — open this panel from inside HA (sidebar), not as standalone URL', 'error');
+        return;
+      }
       ws.send(JSON.stringify({ type: 'auth', access_token: token }));
+    } else if (msg.type === 'auth_invalid') {
+      wsAuthed = false;
+      setStatus('Auth invalid: ' + (msg.message || 'token rejected. Refresh the page.'), 'error');
     } else if (msg.type === 'auth_ok') {
+      wsAuthed = true;
+      setStatus('Connected', 'ok');
+      setTimeout(() => setStatus(''), 2000);
       loadAll();
     } else if (msg.type === 'result') {
       const cb = pendingMessages[msg.id];
@@ -489,20 +527,24 @@ function connectWS() {
       }
     }
   };
-  ws.onclose = () => setTimeout(connectWS, 3000);
+  ws.onclose = () => {
+    wsAuthed = false;
+    setStatus('Disconnected — reconnecting…', 'warn');
+    setTimeout(connectWS, 3000);
+  };
 }
 
 function _getToken() {
-  // Try to get from parent HA window
+  // Try same-window localStorage first (panel iframe, same origin as HA)
   try {
-    const hassTokens = JSON.parse(localStorage.getItem('hassTokens'));
-    if (hassTokens && hassTokens.access_token) return hassTokens.access_token;
+    const t = JSON.parse(localStorage.getItem('hassTokens'));
+    if (t && t.access_token) return t.access_token;
   } catch (e) {}
-  // Try from parent window
+  // Try parent window (when embedded as iframe panel)
   try {
-    if (window.parent && window.parent.document) {
-      const parentTokens = JSON.parse(window.parent.localStorage.getItem('hassTokens'));
-      if (parentTokens && parentTokens.access_token) return parentTokens.access_token;
+    if (window.parent && window.parent !== window) {
+      const t = JSON.parse(window.parent.localStorage.getItem('hassTokens'));
+      if (t && t.access_token) return t.access_token;
     }
   } catch (e) {}
   return '';
@@ -510,13 +552,49 @@ function _getToken() {
 
 function sendWS(type, data = {}) {
   return new Promise((resolve, reject) => {
+    if (!wsAuthed) {
+      reject(new Error('WebSocket not authenticated — see status bar'));
+      return;
+    }
     const id = msgId++;
     pendingMessages[id] = (result, error) => {
       if (error) reject(error);
       else resolve(result);
     };
-    wsConnection.send(JSON.stringify({ id, type, ...data }));
+    try {
+      wsConnection.send(JSON.stringify({ id, type, ...data }));
+    } catch (e) {
+      delete pendingMessages[id];
+      reject(e);
+    }
   });
+}
+
+// ═══ ENTITY PICKER (datalist autocomplete) ═══
+async function getEntities() {
+  if (entitiesCache) return entitiesCache;
+  try {
+    const states = await sendWS('get_states');
+    entitiesCache = states || [];
+  } catch (e) {
+    console.error('get_states failed:', e);
+    entitiesCache = [];
+  }
+  return entitiesCache;
+}
+
+async function populatePicker(datalistId, domainPrefix) {
+  const dl = document.getElementById(datalistId);
+  if (!dl) return;
+  const states = await getEntities();
+  const prefix = domainPrefix + '.';
+  const filtered = states.filter(s => s.entity_id && s.entity_id.startsWith(prefix));
+  dl.innerHTML = filtered
+    .map(s => {
+      const name = s.attributes && s.attributes.friendly_name;
+      return `<option value="${esc(s.entity_id)}">${esc(name || s.entity_id)}</option>`;
+    })
+    .join('');
 }
 
 // ═══ DATA LOADING ═══
@@ -679,6 +757,7 @@ function renderSettings() {
   // Soil moisture
   document.getElementById('soil-moisture-sensor').value = sensors.sensor_soil_moisture || '';
   document.getElementById('moisture-threshold').value = entry?.moisture_skip_threshold ?? 40;
+  populatePicker('dl-sensors', 'sensor');
 }
 
 // ═══ TABS ═══
@@ -727,6 +806,7 @@ function openZoneModal(zone = null) {
     document.getElementById('zone-soil-override').value = '';
   }
   toggleSunFields();
+  populatePicker('dl-switches', 'switch');
   modal.classList.remove('hidden');
 }
 
@@ -904,9 +984,12 @@ function esc(s) {
 function toast(msg) {
   const el = document.createElement('div');
   el.className = 'toast';
+  const isErr = /^Error/i.test(msg);
+  if (isErr) el.style.background = 'var(--danger)';
   el.textContent = msg;
+  el.onclick = () => el.remove();
   document.body.appendChild(el);
-  setTimeout(() => el.remove(), 3000);
+  setTimeout(() => el.remove(), isErr ? 8000 : 3000);
 }
 
 // ═══ INIT ═══
