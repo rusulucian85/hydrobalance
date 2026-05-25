@@ -58,11 +58,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ])
         frontend.async_register_built_in_panel(
             hass,
-            component_name="iframe",
+            component_name="custom",
             sidebar_title=PANEL_TITLE,
             sidebar_icon=PANEL_ICON,
             frontend_url_path=DOMAIN,
-            config={"url": f"{PANEL_URL}/index.html"},
+            config={
+                "_panel_custom": {
+                    "name": "hydrobalance-panel",
+                    "js_url": f"{PANEL_URL}/hydrobalance-panel.js",
+                    "embed_iframe": False,
+                    "trust_external": False,
+                }
+            },
             require_admin=False,
         )
 
