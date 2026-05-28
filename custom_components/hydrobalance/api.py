@@ -143,7 +143,8 @@ def ws_discover_sensors(hass: HomeAssistant, connection: websocket_api.ActiveCon
         unit = state.attributes.get("unit_of_measurement", "")
 
         if device_class == "temperature" and not sensors["sensor_temperature"]:
-            if "forecast" not in eid and "min" not in eid and "max" not in eid:
+            excluded = ("forecast", "min", "max", "dew", "feels", "apparent")
+            if not any(token in eid for token in excluded):
                 sensors["sensor_temperature"] = entry.entity_id
 
         if device_class == "temperature" and not sensors["sensor_temperature_min"]:

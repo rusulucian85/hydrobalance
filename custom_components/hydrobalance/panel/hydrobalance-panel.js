@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.3.2 &mdash; Smart Irrigation</div>
+        <div class="version">v0.3.3 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -231,7 +231,8 @@ const TEMPLATE = `
         </p>
         <div id="sensor-list"><div class="loading">Loading...</div></div>
         <div class="actions">
-          <button class="btn btn-outline btn-sm" onclick="window.__hb.discoverSensors()">Re-discover Sensors</button>
+          <button class="btn btn-primary" onclick="window.__hb.saveWeatherSensors()">Save Sensors</button>
+          <button class="btn btn-outline" onclick="window.__hb.discoverSensors()">Re-discover Sensors</button>
         </div>
       </div>
 
@@ -587,11 +588,11 @@ class HydroBalancePanel extends HTMLElement {
     ];
     let html = '';
     for (const [key, label] of sensorKeys) {
-      const val = sensors[key];
+      const val = sensors[key] || '';
       html += `
-        <div class="sensor-item">
-          <span class="sensor-name">${label}</span>
-          <span class="sensor-value ${val ? 'found' : 'missing'}">${this._esc(val || 'Not configured')}</span>
+        <div class="form-group">
+          <label>${label}</label>
+          <input type="text" id="ws-${key}" list="dl-sensors" value="${this._esc(val)}" placeholder="Not configured" autocapitalize="off" autocomplete="off">
         </div>`;
     }
     this.$('sensor-list').innerHTML = html;
@@ -779,13 +780,40 @@ class HydroBalancePanel extends HTMLElement {
     }
   }
 
+  async saveWeatherSensors() {
+    const entry = this._config[this._currentEntryId];
+    const sensors = { ...((entry && entry.sensors) || {}) };
+    const keys = [
+      'sensor_temperature', 'sensor_temperature_min', 'sensor_temperature_max',
+      'sensor_humidity', 'sensor_wind_speed', 'sensor_uv_index',
+      'sensor_rain', 'sensor_rain_forecast',
+    ];
+    for (const k of keys) {
+      const v = this.$('ws-' + k).value.trim();
+      if (v) sensors[k] = v; else delete sensors[k];
+    }
+    try {
+      await this._ws('hydrobalance/config/save', { entry_id: this._currentEntryId, sensors });
+      this._toast('Sensors saved!');
+      await this._loadAll();
+    } catch (e) {
+      this._toast('Error: ' + (e.message || e));
+    }
+  }
+
   async discoverSensors() {
     const entry = this._config[this._currentEntryId];
     const weatherEntity = this.$('weather-entity').value.trim() || (entry && entry.weather_entity);
     if (!weatherEntity) { this._toast('Set a weather entity first'); return; }
     try {
-      const sensors = await this._ws('hydrobalance/discover_sensors', { weather_entity: weatherEntity });
-      await this._ws('hydrobalance/config/save', { entry_id: this._currentEntryId, sensors: sensors });
+      const discovered = await this._ws('hydrobalance/discover_sensors', { weather_entity: weatherEntity });
+      // Merge over existing so we don't wipe the soil-moisture sensor (which
+      // discovery doesn't return) or any manual overrides for unfound keys.
+      const merged = { ...((entry && entry.sensors) || {}) };
+      for (const [k, v] of Object.entries(discovered)) {
+        if (v) merged[k] = v;
+      }
+      await this._ws('hydrobalance/config/save', { entry_id: this._currentEntryId, sensors: merged });
       this._toast('Sensors re-discovered!');
       await this._loadAll();
     } catch (e) {
