@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.3.5 &mdash; Smart Irrigation</div>
+        <div class="version">v0.4.0 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -378,6 +378,7 @@ class HydroBalancePanel extends HTMLElement {
     this._currentEntryId = null;
     this._entitiesCache = null;
     this._rendered = false;
+    this._cronTimer = null;
     // Inline event handlers in the template reference this global. There's
     // only ever one panel instance, so a single window-scoped pointer is fine.
     window.__hb = this;
@@ -502,14 +503,21 @@ class HydroBalancePanel extends HTMLElement {
       const sunCoeff = zdata.sun_coefficient || 1;
       const zoneStatus = zdata.status || 'ok';
       const threshold = (zdata.config && zdata.config.deficit_threshold) || 12;
+      const manualActive = !!zdata.manual_active;
+      const manualStarted = zdata.manual_started || '';
 
       let badgeClass = 'badge-ok', badgeText = 'OK';
-      if (zoneStatus === 'watering') { badgeClass = 'badge-active'; badgeText = 'Watering'; }
+      if (manualActive) { badgeClass = 'badge-active'; badgeText = 'Manual'; }
+      else if (zoneStatus === 'watering') { badgeClass = 'badge-active'; badgeText = 'Watering'; }
       else if (zoneStatus === 'needs_water') { badgeClass = 'badge-danger'; badgeText = 'Needs Water'; }
       else if (deficit > threshold * 0.7) { badgeClass = 'badge-warning'; badgeText = 'Building'; }
 
       const pct = Math.min(100, Math.max(0, (deficit / threshold) * 100));
       const barColor = pct > 80 ? 'var(--danger)' : pct > 50 ? 'var(--warning)' : 'var(--success)';
+
+      const cron = manualActive
+        ? `<span class="hb-cron" data-start="${this._esc(manualStarted)}" style="font-variant-numeric:tabular-nums;color:var(--danger);font-weight:600;">00:00</span>`
+        : '';
 
       html += `
         <div class="zone-card">
@@ -525,9 +533,42 @@ class HydroBalancePanel extends HTMLElement {
           <div class="progress-bar">
             <div class="fill" style="width:${pct}%;background:${barColor}"></div>
           </div>
+          <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
+            <button class="btn btn-sm ${manualActive ? 'btn-danger' : 'btn-outline'}"
+              onclick="window.__hb.manualWater('${this._esc(zid)}', ${manualActive ? 'false' : 'true'})">
+              ${manualActive ? 'Stop Manual' : 'Manual Water'}
+            </button>
+            ${cron}
+          </div>
         </div>`;
     }
     container.innerHTML = html;
+    this._ensureCronTicker();
+  }
+
+  // Live elapsed-time ticker for any zone currently in manual watering.
+  _updateCrons() {
+    const spans = this.shadowRoot.querySelectorAll('.hb-cron');
+    if (spans.length === 0) {
+      if (this._cronTimer) { clearInterval(this._cronTimer); this._cronTimer = null; }
+      return;
+    }
+    const now = Date.now();
+    spans.forEach(sp => {
+      const start = Date.parse(sp.dataset.start);
+      if (isNaN(start)) return;
+      const sec = Math.max(0, Math.floor((now - start) / 1000));
+      const m = String(Math.floor(sec / 60)).padStart(2, '0');
+      const s = String(sec % 60).padStart(2, '0');
+      sp.textContent = `${m}:${s}`;
+    });
+  }
+
+  _ensureCronTicker() {
+    this._updateCrons();
+    if (this._cronTimer) return;
+    if (this.shadowRoot.querySelectorAll('.hb-cron').length === 0) return;
+    this._cronTimer = setInterval(() => this._updateCrons(), 1000);
   }
 
   _renderZones() {
@@ -826,6 +867,14 @@ class HydroBalancePanel extends HTMLElement {
       await this._ws('hydrobalance/force_water', zoneId ? { zone_id: zoneId } : {});
       this._toast('Force watering initiated');
       setTimeout(() => this._loadAll(), 2000);
+    } catch (e) { this._toast('Error: ' + (e.message || e)); }
+  }
+
+  async manualWater(zoneId, on) {
+    try {
+      await this._ws('hydrobalance/manual_water', { zone_id: zoneId, on });
+      this._toast(on ? 'Manual watering started' : 'Manual watering stopped');
+      await this._loadAll();
     } catch (e) { this._toast('Error: ' + (e.message || e)); }
   }
 

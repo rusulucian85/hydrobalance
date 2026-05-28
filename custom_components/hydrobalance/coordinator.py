@@ -92,6 +92,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._watering_active = False
         self._watering_task: asyncio.Task | None = None
         self._skip_next = False
+        # Manual override: zone_id -> ISO start timestamp while running
+        self._manual_active: dict[str, str] = {}
 
         # Running daily accumulators
         self._today: date | None = None
@@ -176,6 +178,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if stored.get("today")
                 else None
             )
+            self._manual_active = stored.get("manual_active", {})
             # Load panel-managed config
             self._store_data["zones"] = stored.get("zones", [])
             self._store_data["soil_type"] = stored.get("soil_type", "clay")
@@ -213,6 +216,14 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.hass, self._async_watering_check, offset=timedelta(hours=-1)
             )
         )
+
+        # Finalize any manual watering interrupted by a restart: count the
+        # elapsed time up to now, subtract from the deficit, and turn the
+        # switch off (handled inside _finalize_manual).
+        if self._manual_active:
+            for zid in list(self._manual_active.keys()):
+                await self._finalize_manual(zid)
+            await self._persist()
 
         # Safety check: turn off any managed switches that are on after restart
         await self._safety_check_switches()
@@ -291,6 +302,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     ),
                     "sun_coefficient": round(sun_coefficients.get(zone[CONF_ZONE_ID], 1.0), 2),
                     "status": self._get_zone_status(zone),
+                    "manual_active": zone[CONF_ZONE_ID] in self._manual_active,
+                    "manual_started": self._manual_active.get(zone[CONF_ZONE_ID]),
                     "config": zone,
                 }
                 for zone in self.zones
@@ -657,6 +670,65 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._process_watering_queue()
         )
 
+    async def async_manual_toggle(self, zone_id: str, turn_on: bool) -> None:
+        """Manually start/stop watering a zone.
+
+        Turning off counts the elapsed run time, converts it to mm using the
+        zone's sprinkler rate, and reduces the deficit (never below 0).
+        """
+        zone = self._get_zone_config(zone_id)
+        if zone is None:
+            LOGGER.warning("Manual toggle: zone %s not found", zone_id)
+            return
+
+        switch_entity = zone.get(CONF_ZONE_SWITCH)
+        if not switch_entity:
+            LOGGER.warning("Manual toggle: zone %s has no switch entity", zone_id)
+            return
+
+        if turn_on:
+            if zone_id in self._manual_active:
+                return  # already running
+            await self.hass.services.async_call(
+                "switch", "turn_on", {"entity_id": switch_entity}
+            )
+            self._manual_active[zone_id] = datetime.now().isoformat()
+            LOGGER.info("Manual watering ON for zone %s", zone_id)
+        else:
+            await self._finalize_manual(zone_id)
+
+        await self._persist()
+        await self.async_request_refresh()
+
+    async def _finalize_manual(self, zone_id: str) -> None:
+        """Stop a manual run, applying the watered mm to the zone deficit."""
+        start_iso = self._manual_active.pop(zone_id, None)
+        zone = self._get_zone_config(zone_id)
+        switch_entity = zone.get(CONF_ZONE_SWITCH) if zone else None
+
+        if switch_entity:
+            await self.hass.services.async_call(
+                "switch", "turn_off", {"entity_id": switch_entity}
+            )
+
+        if not start_iso or zone is None:
+            return
+
+        elapsed_min = (
+            datetime.now() - datetime.fromisoformat(start_iso)
+        ).total_seconds() / 60
+        sprinkler_rate = zone.get(CONF_ZONE_SPRINKLER_RATE, DEFAULT_SPRINKLER_RATE)
+        mm_applied = (elapsed_min / 30) * sprinkler_rate
+
+        current = self._zone_deficits.get(zone_id, 0.0)
+        new_deficit = max(0.0, current - mm_applied)
+        self._zone_deficits[zone_id] = round(new_deficit, 1)
+
+        LOGGER.info(
+            "Manual watering OFF zone %s: %.1f min → %.1fmm, deficit %.1f→%.1f",
+            zone_id, elapsed_min, mm_applied, current, new_deficit,
+        )
+
     async def async_skip_day(self) -> None:
         """Skip the next watering check."""
         self._skip_next = True
@@ -725,6 +797,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "daily_peak_uv": self._daily_peak_uv,
             "daily_rain": self._daily_rain,
             "today": self._today.isoformat() if self._today else None,
+            "manual_active": self._manual_active,
             # Panel-managed config
             "zones": self._store_data.get("zones", []),
             "soil_type": self._store_data.get("soil_type", "clay"),

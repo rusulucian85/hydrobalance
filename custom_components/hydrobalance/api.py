@@ -20,6 +20,7 @@ def async_register_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_get_status)
     websocket_api.async_register_command(hass, ws_discover_sensors)
     websocket_api.async_register_command(hass, ws_force_water)
+    websocket_api.async_register_command(hass, ws_manual_water)
     websocket_api.async_register_command(hass, ws_skip_day)
     websocket_api.async_register_command(hass, ws_reset_deficit)
 
@@ -178,6 +179,20 @@ async def ws_force_water(hass: HomeAssistant, connection: websocket_api.ActiveCo
     """Force watering."""
     for coordinator in hass.data.get(DOMAIN, {}).values():
         await coordinator.async_force_water(msg.get("zone_id"), msg.get("mm"))
+        break
+    connection.send_result(msg["id"], {"success": True})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "hydrobalance/manual_water",
+    vol.Required("zone_id"): str,
+    vol.Required("on"): bool,
+})
+@websocket_api.async_response
+async def ws_manual_water(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Manually toggle watering for a zone."""
+    for coordinator in hass.data.get(DOMAIN, {}).values():
+        await coordinator.async_manual_toggle(msg["zone_id"], msg["on"])
         break
     connection.send_result(msg["id"], {"success": True})
 
