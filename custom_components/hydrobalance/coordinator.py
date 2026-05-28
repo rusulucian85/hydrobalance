@@ -42,6 +42,7 @@ from .const import (
     CONF_STRATEGY,
     CONF_ZONES,
     CONF_USE_FORECAST,
+    CONF_WEATHER_ENTITY,
     CONF_SENSOR_TEMPERATURE,
     CONF_SENSOR_TEMPERATURE_MIN,
     CONF_SENSOR_TEMPERATURE_MAX,
@@ -112,6 +113,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "strategy": "balanced",
             "sensors": {},
             CONF_MOISTURE_SKIP_THRESHOLD: DEFAULT_MOISTURE_SKIP_THRESHOLD,
+            CONF_WEATHER_ENTITY: None,
+            CONF_USE_FORECAST: True,
         }
 
     @property
@@ -142,6 +145,21 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             CONF_MOISTURE_SKIP_THRESHOLD, DEFAULT_MOISTURE_SKIP_THRESHOLD
         )
 
+    @property
+    def weather_entity(self) -> str | None:
+        """Get the weather entity (panel storage, falling back to config entry)."""
+        return self._store_data.get(CONF_WEATHER_ENTITY) or self.config.get(
+            CONF_WEATHER_ENTITY
+        )
+
+    @property
+    def use_forecast(self) -> bool:
+        """Get whether rain-forecast skip is enabled."""
+        val = self._store_data.get(CONF_USE_FORECAST)
+        if val is None:
+            return bool(self.config.get(CONF_USE_FORECAST, True))
+        return bool(val)
+
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
     async def async_setup(self) -> None:
@@ -166,6 +184,13 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._store_data["sensors"] = stored.get("sensors", {})
             self._store_data[CONF_MOISTURE_SKIP_THRESHOLD] = stored.get(
                 CONF_MOISTURE_SKIP_THRESHOLD, DEFAULT_MOISTURE_SKIP_THRESHOLD
+            )
+            # Migrate weather_entity/use_forecast from config entry on first load
+            self._store_data[CONF_WEATHER_ENTITY] = stored.get(
+                CONF_WEATHER_ENTITY, self.config.get(CONF_WEATHER_ENTITY)
+            )
+            self._store_data[CONF_USE_FORECAST] = stored.get(
+                CONF_USE_FORECAST, self.config.get(CONF_USE_FORECAST, True)
             )
             LOGGER.info("Loaded persisted data: deficits=%s, zones=%d", self._zone_deficits, len(self.zones))
 
@@ -507,7 +532,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         # Rain forecast skip
-        if self.config.get(CONF_USE_FORECAST):
+        if self.use_forecast:
             forecast = self._read_sensor(CONF_SENSOR_RAIN_FORECAST)
             if forecast is not None and forecast > RAIN_FORECAST_SKIP:
                 LOGGER.info("Rain forecast %.1fmm > %.1f, skipping", forecast, RAIN_FORECAST_SKIP)
@@ -706,4 +731,6 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "strategy": self._store_data.get("strategy", "balanced"),
             "sensors": self._store_data.get("sensors", {}),
             CONF_MOISTURE_SKIP_THRESHOLD: self.moisture_skip_threshold,
+            CONF_WEATHER_ENTITY: self._store_data.get(CONF_WEATHER_ENTITY),
+            CONF_USE_FORECAST: self._store_data.get(CONF_USE_FORECAST, True),
         })

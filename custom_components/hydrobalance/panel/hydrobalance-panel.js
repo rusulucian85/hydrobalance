@@ -142,12 +142,13 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.3.0 &mdash; Smart Irrigation</div>
+        <div class="version">v0.3.1 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
     <datalist id="dl-switches"></datalist>
     <datalist id="dl-sensors"></datalist>
+    <datalist id="dl-weather"></datalist>
 
     <div class="tabs">
       <button class="tab active" data-tab="dashboard" onclick="window.__hb.showTab('dashboard')">Dashboard</button>
@@ -204,6 +205,25 @@ const TEMPLATE = `
     </div>
 
     <div id="tab-settings" class="hidden">
+      <div class="card">
+        <h2>Weather Source</h2>
+        <p style="font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;">
+          The weather integration that ET is calculated from. After changing it,
+          re-discover sensors below.
+        </p>
+        <div class="form-group">
+          <label>Weather Entity</label>
+          <input type="text" id="weather-entity" list="dl-weather" placeholder="weather.home" autocapitalize="off" autocomplete="off">
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="use-forecast" style="width:auto;">
+          <label for="use-forecast" style="margin:0;">Skip watering when rain is forecast</label>
+        </div>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="window.__hb.saveWeatherConfig()">Save Weather Source</button>
+        </div>
+      </div>
+
       <div class="card">
         <h2>Weather Sensors</h2>
         <p style="font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;">
@@ -547,6 +567,10 @@ class HydroBalancePanel extends HTMLElement {
     if (!this._currentEntryId) return;
     const entry = this._config[this._currentEntryId];
 
+    this.$('weather-entity').value = (entry && entry.weather_entity) || '';
+    this.$('use-forecast').checked = !(entry && entry.use_forecast === false);
+    this._populatePicker('dl-weather', 'weather');
+
     this.$('soil-type').value = (entry && entry.soil_type) || 'clay';
     this.$('strategy').value = (entry && entry.strategy) || 'balanced';
 
@@ -740,10 +764,25 @@ class HydroBalancePanel extends HTMLElement {
     }
   }
 
+  async saveWeatherConfig() {
+    const weatherEntity = this.$('weather-entity').value.trim();
+    try {
+      await this._ws('hydrobalance/config/save', {
+        entry_id: this._currentEntryId,
+        weather_entity: weatherEntity || null,
+        use_forecast: this.$('use-forecast').checked,
+      });
+      this._toast('Weather source saved!');
+      await this._loadAll();
+    } catch (e) {
+      this._toast('Error: ' + (e.message || e));
+    }
+  }
+
   async discoverSensors() {
     const entry = this._config[this._currentEntryId];
-    const weatherEntity = entry && entry.config && entry.config.weather_entity;
-    if (!weatherEntity) { this._toast('No weather entity configured'); return; }
+    const weatherEntity = this.$('weather-entity').value.trim() || (entry && entry.weather_entity);
+    if (!weatherEntity) { this._toast('Set a weather entity first'); return; }
     try {
       const sensors = await this._ws('hydrobalance/discover_sensors', { weather_entity: weatherEntity });
       await this._ws('hydrobalance/config/save', { entry_id: this._currentEntryId, sensors: sensors });
