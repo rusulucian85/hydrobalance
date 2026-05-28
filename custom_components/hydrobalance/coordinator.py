@@ -52,7 +52,12 @@ from .const import (
     CONF_ZONE_OBSTACLE_DISTANCE,
     CONF_ZONE_SOIL_OVERRIDE,
     CONF_ZONE_CROP_COEFFICIENT,
+    CONF_ZONE_CYCLE_SOAK,
+    CONF_ZONE_PULSE_MINUTES,
+    CONF_ZONE_SOAK_MINUTES,
     DEFAULT_CROP_COEFFICIENT,
+    DEFAULT_PULSE_MINUTES,
+    DEFAULT_SOAK_MINUTES,
     DEFAULT_SPRINKLER_RATE,
     DEFAULT_DEFICIT_THRESHOLD,
     DEFAULT_MAX_PER_CYCLE,
@@ -544,6 +549,12 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._watering_queue.popleft()
                 continue
 
+            switch_entity = zone.get(CONF_ZONE_SWITCH)
+            if not switch_entity:
+                LOGGER.warning("Zone %s has no switch entity", zone_id)
+                self._watering_queue.popleft()
+                continue
+
             deficit = self._zone_deficits.get(zone_id, 0.0)
             max_per_cycle = zone.get(
                 CONF_ZONE_MAX_PER_CYCLE,
@@ -552,57 +563,94 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             mm_to_apply = min(deficit, max_per_cycle)
             sprinkler_rate = zone.get(CONF_ZONE_SPRINKLER_RATE, DEFAULT_SPRINKLER_RATE)
 
-            duration_minutes = max(1, (mm_to_apply / sprinkler_rate) * 30)
+            total_minutes = max(1.0, (mm_to_apply / sprinkler_rate) * 30)
 
-            switch_entity = zone.get(CONF_ZONE_SWITCH)
-            if not switch_entity:
-                LOGGER.warning("Zone %s has no switch entity", zone_id)
-                self._watering_queue.popleft()
-                continue
+            # Cycle & soak splits the run into pulses with rest periods so
+            # water soaks in instead of running off (clay, slopes). When off,
+            # one pulse covers the whole run.
+            if zone.get(CONF_ZONE_CYCLE_SOAK):
+                pulse_minutes = max(
+                    1.0, zone.get(CONF_ZONE_PULSE_MINUTES, DEFAULT_PULSE_MINUTES)
+                )
+                soak_minutes = max(
+                    0.0, zone.get(CONF_ZONE_SOAK_MINUTES, DEFAULT_SOAK_MINUTES)
+                )
+            else:
+                pulse_minutes = total_minutes
+                soak_minutes = 0.0
 
             LOGGER.info(
-                "Watering zone %s: %.1fmm for %.0f min (switch: %s)",
-                zone_id, mm_to_apply, duration_minutes, switch_entity,
+                "Watering zone %s: %.1fmm over %.0f min (pulse=%.0f soak=%.0f, switch=%s)",
+                zone_id, mm_to_apply, total_minutes, pulse_minutes, soak_minutes, switch_entity,
             )
 
-            # Turn on
-            await self.hass.services.async_call(
-                "switch", "turn_on", {"entity_id": switch_entity}
-            )
-            await self.async_request_refresh()
+            applied_mm = 0.0
+            remaining = total_minutes
+            cancelled = False
 
-            # Wait
             try:
-                await asyncio.sleep(duration_minutes * 60)
+                while remaining > 0.01:
+                    run = min(pulse_minutes, remaining)
+                    await self.hass.services.async_call(
+                        "switch", "turn_on", {"entity_id": switch_entity}
+                    )
+                    await self.async_request_refresh()
+
+                    pulse_start = datetime.now()
+                    try:
+                        await asyncio.sleep(run * 60)
+                        ran_min = run
+                    except asyncio.CancelledError:
+                        ran_min = (
+                            datetime.now() - pulse_start
+                        ).total_seconds() / 60
+                        cancelled = True
+
+                    # Turn off and credit the water actually delivered, so a
+                    # cancellation mid-run only forfeits the undelivered part.
+                    await self.hass.services.async_call(
+                        "switch", "turn_off", {"entity_id": switch_entity}
+                    )
+                    delivered = (ran_min / 30) * sprinkler_rate
+                    applied_mm += delivered
+                    self._zone_deficits[zone_id] = round(
+                        max(DEFICIT_MIN, self._zone_deficits.get(zone_id, 0.0) - delivered),
+                        1,
+                    )
+                    remaining -= ran_min
+
+                    if cancelled:
+                        break
+                    if remaining > 0.01 and soak_minutes > 0:
+                        await asyncio.sleep(soak_minutes * 60)
             except asyncio.CancelledError:
-                # Emergency stop — turn off switch
+                # Cancelled during a soak — make sure the switch is off.
                 await self.hass.services.async_call(
                     "switch", "turn_off", {"entity_id": switch_entity}
                 )
-                LOGGER.warning("Watering cancelled for zone %s", zone_id)
+                cancelled = True
+
+            if cancelled:
+                LOGGER.warning(
+                    "Watering cancelled for zone %s (applied %.1fmm)", zone_id, applied_mm
+                )
                 self._log_event(
-                    "cancelled", zone_id=zone_id, trigger=self._current_trigger
+                    "cancelled",
+                    zone_id=zone_id,
+                    mm=applied_mm,
+                    trigger=self._current_trigger,
                 )
                 break
 
-            # Turn off
-            await self.hass.services.async_call(
-                "switch", "turn_off", {"entity_id": switch_entity}
-            )
-
-            # Update deficit
-            self._zone_deficits[zone_id] = round(
-                max(DEFICIT_MIN, self._zone_deficits.get(zone_id, 0.0) - mm_to_apply), 1
-            )
             LOGGER.info(
                 "Zone %s done. Applied %.1fmm, new deficit: %.1f",
-                zone_id, mm_to_apply, self._zone_deficits[zone_id],
+                zone_id, applied_mm, self._zone_deficits[zone_id],
             )
             self._log_event(
                 "watered",
                 zone_id=zone_id,
-                mm=mm_to_apply,
-                minutes=duration_minutes,
+                mm=applied_mm,
+                minutes=total_minutes,
                 trigger=self._current_trigger,
             )
 

@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.7.0 &mdash; Smart Irrigation</div>
+        <div class="version">v0.8.0 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -376,6 +376,20 @@ const TEMPLATE = `
             <option value="1.1">1.1 — Vegetable garden</option>
             <option value="1.2">1.2 — High-demand / dense crop</option>
           </select>
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="zone-cycle-soak" style="width:auto;" onchange="window.__hb.toggleCycleSoakFields()">
+          <label for="zone-cycle-soak" style="margin:0;">Cycle &amp; Soak (pulse watering to prevent runoff)</label>
+        </div>
+        <div id="cycle-soak-fields" class="form-row hidden">
+          <div class="form-group">
+            <label>Pulse (min)</label>
+            <input type="number" id="zone-pulse" value="10" step="1" min="1">
+          </div>
+          <div class="form-group">
+            <label>Soak (min)</label>
+            <input type="number" id="zone-soak" value="20" step="1" min="0">
+          </div>
         </div>
         <div class="form-group">
           <label>Soil Override (leave empty for system default)</label>
@@ -720,6 +734,7 @@ class HydroBalancePanel extends HTMLElement {
             <span>Rate: ${zone.sprinkler_rate || 2.0} mm/30min</span>
             <span>Sun: ${this._esc(sunText)}</span>
             <span>Kc: ${zone.crop_coefficient != null ? zone.crop_coefficient : 1.0}</span>
+            ${zone.cycle_soak ? `<span>Cycle&amp;Soak: ${zone.pulse_minutes || 10}/${zone.soak_minutes || 0}m</span>` : ''}
           </div>
         </div>`;
     }
@@ -791,6 +806,9 @@ class HydroBalancePanel extends HTMLElement {
       this.$('zone-obs-distance').value = zone.obstacle_distance || '';
       this.$('zone-soil-override').value = zone.soil_override || '';
       this.$('zone-kc').value = zone.crop_coefficient != null ? String(zone.crop_coefficient) : '1';
+      this.$('zone-cycle-soak').checked = !!zone.cycle_soak;
+      this.$('zone-pulse').value = zone.pulse_minutes != null ? zone.pulse_minutes : 10;
+      this.$('zone-soak').value = zone.soak_minutes != null ? zone.soak_minutes : 20;
     } else {
       title.textContent = 'Add Zone';
       deleteBtn.classList.add('hidden');
@@ -807,8 +825,12 @@ class HydroBalancePanel extends HTMLElement {
       this.$('zone-obs-distance').value = '';
       this.$('zone-soil-override').value = '';
       this.$('zone-kc').value = '1';
+      this.$('zone-cycle-soak').checked = false;
+      this.$('zone-pulse').value = '10';
+      this.$('zone-soak').value = '20';
     }
     this.toggleSunFields();
+    this.toggleCycleSoakFields();
     this._populatePicker('dl-switches', 'switch');
     this.$('zone-modal').classList.remove('hidden');
   }
@@ -831,6 +853,11 @@ class HydroBalancePanel extends HTMLElement {
     this.$('sun-auto-fields').classList.toggle('hidden', mode !== 'auto');
   }
 
+  toggleCycleSoakFields() {
+    const on = this.$('zone-cycle-soak').checked;
+    this.$('cycle-soak-fields').classList.toggle('hidden', !on);
+  }
+
   // ─── Mutations ──────────────────────────────────────────────────────────
   async saveZone() {
     const editId = this.$('zone-edit-id').value;
@@ -848,6 +875,9 @@ class HydroBalancePanel extends HTMLElement {
       obstacle_distance: parseFloat(this.$('zone-obs-distance').value) || null,
       soil_override: this.$('zone-soil-override').value || null,
       crop_coefficient: parseFloat(this.$('zone-kc').value) || 1.0,
+      cycle_soak: this.$('zone-cycle-soak').checked,
+      pulse_minutes: parseFloat(this.$('zone-pulse').value) || 10,
+      soak_minutes: parseFloat(this.$('zone-soak').value) || 0,
     };
 
     if (!zone.name) { this._toast('Zone name is required'); return; }
