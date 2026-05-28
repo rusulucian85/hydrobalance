@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.4.0 &mdash; Smart Irrigation</div>
+        <div class="version">v0.5.0 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -180,6 +180,11 @@ const TEMPLATE = `
       <div class="card">
         <h2>Zone Status</h2>
         <div id="zone-status-list"><div class="loading">Loading...</div></div>
+      </div>
+
+      <div class="card">
+        <h2>Recent Activity</h2>
+        <div id="activity-list"><div class="empty-state"><p>No activity yet.</p></div></div>
       </div>
 
       <div class="card">
@@ -505,6 +510,10 @@ class HydroBalancePanel extends HTMLElement {
       const threshold = (zdata.config && zdata.config.deficit_threshold) || 12;
       const manualActive = !!zdata.manual_active;
       const manualStarted = zdata.manual_started || '';
+      const waterUsed = zdata.water_used || 0;
+      const lastWatered = zdata.last_watered
+        ? this._relTime(zdata.last_watered)
+        : 'never';
 
       let badgeClass = 'badge-ok', badgeText = 'OK';
       if (manualActive) { badgeClass = 'badge-active'; badgeText = 'Manual'; }
@@ -529,6 +538,8 @@ class HydroBalancePanel extends HTMLElement {
             <span>Deficit: <strong>${deficit} mm</strong></span>
             <span>Sun: <strong>${sunCoeff}</strong></span>
             <span>Threshold: ${threshold} mm</span>
+            <span>Used: <strong>${waterUsed} mm</strong></span>
+            <span>Last: ${this._esc(lastWatered)}</span>
           </div>
           <div class="progress-bar">
             <div class="fill" style="width:${pct}%;background:${barColor}"></div>
@@ -544,6 +555,61 @@ class HydroBalancePanel extends HTMLElement {
     }
     container.innerHTML = html;
     this._ensureCronTicker();
+    this._renderActivity(s.events || []);
+  }
+
+  _renderActivity(events) {
+    const container = this.$('activity-list');
+    if (!container) return;
+    if (!events.length) {
+      container.innerHTML = '<div class="empty-state"><p>No activity yet.</p></div>';
+      return;
+    }
+    const labels = {
+      watered: ['mdi water', 'Watered'],
+      skipped: ['skip', 'Skipped'],
+      cancelled: ['stop', 'Cancelled'],
+    };
+    const triggerText = { auto: 'auto', forced: 'forced', manual: 'manual' };
+    const reasonText = {
+      frost: 'frost protection',
+      rain_forecast: 'rain forecast',
+      soil_moisture: 'soil moisture',
+      skip_next: 'skip requested',
+    };
+    let html = '';
+    for (const ev of events.slice(0, 20)) {
+      const [, label] = labels[ev.kind] || ['', ev.kind];
+      let detail = '';
+      if (ev.kind === 'watered') {
+        const parts = [];
+        if (ev.zone_name) parts.push(this._esc(ev.zone_name));
+        if (ev.mm != null) parts.push(`${ev.mm} mm`);
+        if (ev.minutes != null) parts.push(`${ev.minutes} min`);
+        if (ev.trigger) parts.push(`(${triggerText[ev.trigger] || ev.trigger})`);
+        detail = parts.join(' · ');
+      } else if (ev.kind === 'skipped') {
+        detail = reasonText[ev.reason] || ev.reason || '';
+      } else if (ev.kind === 'cancelled') {
+        detail = ev.zone_name ? this._esc(ev.zone_name) : '';
+      }
+      html += `
+        <div class="sensor-item">
+          <span class="sensor-name">${this._esc(label)} ${detail ? '· ' + detail : ''}</span>
+          <span class="sensor-value">${this._esc(this._relTime(ev.time))}</span>
+        </div>`;
+    }
+    container.innerHTML = html;
+  }
+
+  _relTime(iso) {
+    const t = Date.parse(iso);
+    if (isNaN(t)) return '';
+    const diff = Math.floor((Date.now() - t) / 1000);
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
   }
 
   // Live elapsed-time ticker for any zone currently in manual watering.

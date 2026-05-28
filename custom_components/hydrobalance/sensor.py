@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from homeassistant.components.sensor import (
     SensorEntity,
     SensorDeviceClass,
@@ -33,6 +35,8 @@ async def async_setup_entry(
         entities.append(HydroBalanceZoneDeficitSensor(coordinator, entry, zone))
         entities.append(HydroBalanceZoneStatusSensor(coordinator, entry, zone))
         entities.append(HydroBalanceZoneSunCoefficientSensor(coordinator, entry, zone))
+        entities.append(HydroBalanceZoneWaterUsedSensor(coordinator, entry, zone))
+        entities.append(HydroBalanceZoneLastWateredSensor(coordinator, entry, zone))
 
     async_add_entities(entities)
 
@@ -183,4 +187,47 @@ class HydroBalanceZoneSunCoefficientSensor(HydroBalanceBaseSensor):
         data = self.coordinator.data
         if data and data.get("zones", {}).get(self._zone_id):
             return data["zones"][self._zone_id].get("sun_coefficient")
+        return None
+
+
+class HydroBalanceZoneWaterUsedSensor(HydroBalanceBaseSensor):
+    """Per-zone cumulative water applied."""
+
+    _attr_native_unit_of_measurement = "mm"
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_icon = "mdi:water-percent"
+
+    def __init__(self, coordinator, entry, zone):
+        self._zone_id = zone[CONF_ZONE_ID]
+        self._zone_name = zone.get(CONF_ZONE_NAME, self._zone_id)
+        super().__init__(coordinator, entry, f"zone_{self._zone_id}_water_used")
+        self._attr_name = f"{self._zone_name} Water Used"
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data
+        if data and data.get("zones", {}).get(self._zone_id):
+            return data["zones"][self._zone_id].get("water_used")
+        return None
+
+
+class HydroBalanceZoneLastWateredSensor(HydroBalanceBaseSensor):
+    """Per-zone last-watered timestamp."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:history"
+
+    def __init__(self, coordinator, entry, zone):
+        self._zone_id = zone[CONF_ZONE_ID]
+        self._zone_name = zone.get(CONF_ZONE_NAME, self._zone_id)
+        super().__init__(coordinator, entry, f"zone_{self._zone_id}_last_watered")
+        self._attr_name = f"{self._zone_name} Last Watered"
+
+    @property
+    def native_value(self) -> datetime | None:
+        data = self.coordinator.data
+        if data and data.get("zones", {}).get(self._zone_id):
+            iso = data["zones"][self._zone_id].get("last_watered")
+            if iso:
+                return datetime.fromisoformat(iso).astimezone()
         return None

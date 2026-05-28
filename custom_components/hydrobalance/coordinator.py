@@ -40,6 +40,7 @@ from .const import (
     CONF_SENSOR_SOIL_MOISTURE,
     CONF_MOISTURE_SKIP_THRESHOLD,
     CONF_ZONE_ID,
+    CONF_ZONE_NAME,
     CONF_ZONE_SWITCH,
     CONF_ZONE_SPRINKLER_RATE,
     CONF_ZONE_MAX_PER_CYCLE,
@@ -93,6 +94,14 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Persistent data
         self._zone_deficits: dict[str, float] = {}
         self._last_calc_date: str | None = None
+        self._zone_water_used: dict[str, float] = {}  # cumulative mm per zone
+        self._zone_last_watered: dict[str, str] = {}  # zone_id -> ISO timestamp
+
+        # In-memory ring of recent events for the panel (not persisted; HA's
+        # logbook/recorder holds the durable record via fired bus events).
+        self._recent_events: deque[dict[str, Any]] = deque(maxlen=50)
+        # Trigger label for the run currently being processed.
+        self._current_trigger = "auto"
 
         # Panel-managed configuration (zones, soil, strategy, sensors)
         self._store_data: dict[str, Any] = {
@@ -155,6 +164,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         stored = await self._store.async_load()
         if stored:
             self._zone_deficits = stored.get("zone_deficits", {})
+            self._zone_water_used = stored.get("zone_water_used", {})
+            self._zone_last_watered = stored.get("zone_last_watered", {})
             self._last_calc_date = stored.get("last_calc_date")
             self._daily_tmin = stored.get("daily_tmin", 99.0)
             self._daily_tmax = stored.get("daily_tmax", -99.0)
@@ -291,10 +302,15 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "status": self._get_zone_status(zone),
                     "manual_active": zone[CONF_ZONE_ID] in self._manual_active,
                     "manual_started": self._manual_active.get(zone[CONF_ZONE_ID]),
+                    "water_used": round(
+                        self._zone_water_used.get(zone[CONF_ZONE_ID], 0.0), 1
+                    ),
+                    "last_watered": self._zone_last_watered.get(zone[CONF_ZONE_ID]),
                     "config": zone,
                 }
                 for zone in self.zones
             },
+            "events": list(self._recent_events),
             "watering": {
                 "active": self._watering_active,
                 "current_zone": (
@@ -429,6 +445,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._skip_next:
             LOGGER.info("Watering skipped (skip_next flag)")
             self._skip_next = False
+            self._log_event("skipped", reason="skip_next")
             await self._persist()
             return
 
@@ -440,6 +457,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         tmin_sensor = self._read_sensor(CONF_SENSOR_TEMPERATURE_MIN)
         if tmin_sensor is not None and tmin_sensor < FROST_TEMP_LIMIT:
             LOGGER.info("Frost protection: Tmin=%.1f < %.1f, skipping", tmin_sensor, FROST_TEMP_LIMIT)
+            self._log_event("skipped", reason="frost")
             return
 
         # Rain forecast skip
@@ -447,6 +465,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             forecast = self._read_sensor(CONF_SENSOR_RAIN_FORECAST)
             if forecast is not None and forecast > RAIN_FORECAST_SKIP:
                 LOGGER.info("Rain forecast %.1fmm > %.1f, skipping", forecast, RAIN_FORECAST_SKIP)
+                self._log_event("skipped", reason="rain_forecast")
                 return
 
         # Soil-moisture skip (real sensor feedback overrides ET estimate)
@@ -456,6 +475,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "Soil moisture %.1f%% > %.1f%%, skipping watering",
                 moisture, self.moisture_skip_threshold,
             )
+            self._log_event("skipped", reason="soil_moisture")
             return
 
         # Build watering queue
@@ -475,6 +495,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             LOGGER.info("No zones need watering")
             return
 
+        self._current_trigger = "auto"
         self._watering_queue = deque(queue)
         self._watering_task = self.hass.async_create_task(
             self._process_watering_queue()
@@ -528,6 +549,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "switch", "turn_off", {"entity_id": switch_entity}
                 )
                 LOGGER.warning("Watering cancelled for zone %s", zone_id)
+                self._log_event(
+                    "cancelled", zone_id=zone_id, trigger=self._current_trigger
+                )
                 break
 
             # Turn off
@@ -542,6 +566,13 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             LOGGER.info(
                 "Zone %s done. Applied %.1fmm, new deficit: %.1f",
                 zone_id, mm_to_apply, self._zone_deficits[zone_id],
+            )
+            self._log_event(
+                "watered",
+                zone_id=zone_id,
+                mm=mm_to_apply,
+                minutes=duration_minutes,
+                trigger=self._current_trigger,
             )
 
             self._watering_queue.popleft()
@@ -563,6 +594,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if zone:
                 max_cycle = zone.get(CONF_ZONE_MAX_PER_CYCLE, DEFAULT_MAX_PER_CYCLE)
                 self._zone_deficits[zid] = mm or max_cycle + DEFAULT_DEFICIT_THRESHOLD
+        self._current_trigger = "forced"
         self._watering_queue = deque(zones)
         self._watering_task = self.hass.async_create_task(
             self._process_watering_queue()
@@ -626,6 +658,13 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "Manual watering OFF zone %s: %.1f min → %.1fmm, deficit %.1f→%.1f",
             zone_id, elapsed_min, mm_applied, current, new_deficit,
         )
+        self._log_event(
+            "watered",
+            zone_id=zone_id,
+            mm=mm_applied,
+            minutes=elapsed_min,
+            trigger="manual",
+        )
 
     async def async_skip_day(self) -> None:
         """Skip the next watering check."""
@@ -651,6 +690,51 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if zone[CONF_ZONE_ID] == zone_id:
                 return zone
         return None
+
+    def _zone_label(self, zone_id: str | None) -> str | None:
+        """Human-readable zone name for events/logbook."""
+        if zone_id is None:
+            return None
+        zone = self._get_zone_config(zone_id)
+        return zone.get(CONF_ZONE_NAME, zone_id) if zone else zone_id
+
+    @callback
+    def _log_event(
+        self,
+        kind: str,
+        *,
+        zone_id: str | None = None,
+        mm: float | None = None,
+        minutes: float | None = None,
+        trigger: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """Record an event: update usage counters, ring buffer, and fire on the bus.
+
+        For watered events, accumulates per-zone water usage and stamps the
+        last-watered time. The fired bus event is what HA's logbook/recorder
+        persists, so this method keeps no durable history of its own.
+        """
+        now_iso = datetime.now().isoformat()
+
+        if kind == "watered" and zone_id is not None and mm:
+            self._zone_water_used[zone_id] = round(
+                self._zone_water_used.get(zone_id, 0.0) + mm, 1
+            )
+            self._zone_last_watered[zone_id] = now_iso
+
+        event: dict[str, Any] = {
+            "time": now_iso,
+            "kind": kind,
+            "zone_id": zone_id,
+            "zone_name": self._zone_label(zone_id),
+            "mm": round(mm, 1) if mm is not None else None,
+            "minutes": round(minutes, 1) if minutes is not None else None,
+            "trigger": trigger,
+            "reason": reason,
+        }
+        self._recent_events.appendleft(event)
+        self.hass.bus.async_fire(f"{DOMAIN}_event", event)
 
     def _get_zone_status(self, zone: dict[str, Any]) -> str:
         """Get the status string for a zone."""
@@ -689,6 +773,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Save state to persistent storage."""
         await self._store.async_save({
             "zone_deficits": self._zone_deficits,
+            "zone_water_used": self._zone_water_used,
+            "zone_last_watered": self._zone_last_watered,
             "last_calc_date": self._last_calc_date,
             "daily_tmin": self._daily_tmin,
             "daily_tmax": self._daily_tmax,
