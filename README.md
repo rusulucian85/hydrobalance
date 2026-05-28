@@ -1,223 +1,599 @@
 # HydroBalance
 
-**ET-based smart irrigation for Home Assistant.** HydroBalance decides *when* and *how
-long* to water each zone of your garden by tracking a per-zone **water deficit** that
-grows with evapotranspiration (ET) and shrinks with rain and watering — instead of a
-dumb fixed schedule.
+**ET-based smart irrigation for Home Assistant.**
 
-It models each zone independently: a south-facing bed in full sun dries faster than a
-shaded north corner, and sandy soil drains faster than clay. HydroBalance accounts for
-all of it and only waters the zones that actually need it.
+HydroBalance waters your garden the way a careful gardener would: it estimates how much
+water the soil *loses* each day to evaporation and plant transpiration, subtracts
+whatever rain actually soaked in, and tops up only the zones that have run dry — at the
+time of day when the least water is wasted. No fixed schedules, no overwatering after a
+storm, no parched beds during a heatwave.
+
+Every zone is modelled independently. A south-facing bed in full sun on sandy soil dries
+far faster than a shaded north corner on clay, and HydroBalance tracks each one with its
+own running water balance.
 
 Everything is configured from a **custom sidebar panel** — no YAML required.
 
 ---
 
-## Features
+## Table of contents
 
-- **ET-based scheduling** — daily evapotranspiration computed from your weather sensors
-  (temperature, UV, wind, humidity), clamped to a sane 0–8 mm/day range.
-- **Per-zone water deficit** — each zone keeps its own running balance; only zones that
-  cross their threshold get watered.
-- **Per-zone sun exposure** — manual (full sun / partial / heavy shade) or automatic
-  shadow modelling from an obstacle's height, distance and orientation using real solar
-  geometry (`astral`).
-- **Soil-aware rain absorption** — effective rainfall is computed per soil type (clay /
-  loam / sandy) across four intensity bands, so a 1 mm drizzle on clay counts for almost
-  nothing while 10 mm on sand soaks in.
-- **Smart skips** — frost protection, rain-forecast skip, and a soil-moisture sensor
-  override that beats the ET estimate when you have real ground-truth.
-- **Sunrise-aware watering** — the daily watering check runs **1 hour before sunrise**,
-  the coolest and least windy time, so almost all the water reaches the roots and
-  foliage dries off during the day.
-- **Manual watering with auto-accounting** — a per-zone toggle starts/stops a sprinkler
-  on demand; HydroBalance times the run and subtracts the watered millimetres from that
-  zone's deficit (never below 0).
-- **Watering strategies** — Balanced, Water Saving, Lush Green, Clay-Safe presets.
-- **Full custom panel** — dashboard, zone editor, and settings, all in the HA sidebar.
+1. [The core idea: the water deficit](#1-the-core-idea-the-water-deficit)
+2. [Evapotranspiration (ET) — the loss model](#2-evapotranspiration-et--the-loss-model)
+3. [Sensors — what HydroBalance reads and why](#3-sensors--what-hydrobalance-reads-and-why)
+4. [Weather source & sensor discovery](#4-weather-source--sensor-discovery)
+5. [Soil types & effective rainfall](#5-soil-types--effective-rainfall)
+6. [Sun exposure — the per-zone multiplier](#6-sun-exposure--the-per-zone-multiplier)
+7. [The daily cycle — putting it together](#7-the-daily-cycle--putting-it-together)
+8. [Watering: schedule, skips, duration](#8-watering-schedule-skips-duration)
+9. [Manual watering](#9-manual-watering)
+10. [Watering strategies](#10-watering-strategies)
+11. [Sprinkler rate — how to measure yours](#11-sprinkler-rate--how-to-measure-yours)
+12. [Worked example](#12-worked-example)
+13. [Installation & setup](#13-installation--setup)
+14. [The panel](#14-the-panel)
+15. [Entities](#15-entities)
+16. [Services & WebSocket API](#16-services--websocket-api)
+17. [Constants reference](#17-constants-reference)
+18. [Troubleshooting](#18-troubleshooting)
+19. [Changelog](#19-changelog)
 
 ---
 
-## How it works
+## 1. The core idea: the water deficit
 
-### 1. Daily ET (23:00 every night)
+Each zone holds a single number: its **water deficit**, in millimetres. Think of it as
+"how many mm of water the soil is short of ideal right now."
+
+- Every night the deficit **grows** by the day's water loss (ET, adjusted for how sunny
+  the zone is).
+- Rain and watering **shrink** it.
+- When the deficit climbs above a **threshold** (default 12 mm), the zone is watered.
+- Watering applies up to `max_per_cycle` mm and subtracts that from the deficit.
+
+```
+            +ET·sun                         −effective_rain
+deficit ───────────────►  grows each night  ◄─────────────── rain that soaked in
+            −watering (auto or manual)       ◄────────────── sprinkler output
+```
+
+The deficit is clamped to the range **−20 … +60 mm** so a long wet or dry spell can't
+push it to absurd values. (Manual watering uses a tighter floor of **0** — see §9.)
+
+**1 mm of water = 1 litre per square metre.** All quantities in HydroBalance — ET, rain,
+deficit, sprinkler output — are in mm, which keeps the maths consistent regardless of
+zone size.
+
+---
+
+## 2. Evapotranspiration (ET) — the loss model
+
+**Evapotranspiration** is the sum of two losses: water evaporating from the soil surface,
+and water transpired by plants through their leaves. It's the "demand" side of the water
+balance. Hot, sunny, windy, dry days have high ET; cool, cloudy, calm, humid days have
+low ET.
+
+A full reference model (FAO-56 Penman-Monteith) needs solar radiation sensors most home
+setups don't have. HydroBalance uses a lightweight linear approximation driven by the
+sensors a typical weather integration already exposes:
 
 ```
 Tmean = (Tmax + Tmin) / 2
-ET = Tmean·0.15 + UV·0.25 + wind_kmh·0.02 − humidity%·0.015      (clamped 0–8 mm)
+
+ET = Tmean × 0.15        ← warmth drives evaporation
+   + UV    × 0.25        ← sunlight is the energy source for evaporation
+   + Wind  × 0.02        ← wind carries moisture away from leaves/soil
+   − Hum%  × 0.015       ← humid air slows evaporation
+
+ET is then clamped to 0 … 8 mm/day and rounded to 2 decimals.
 ```
 
-`Tmin`/`Tmax`/peak `UV` are accumulated across the day from your sensors; wind and
-humidity are read at calculation time.
+| Term | Coefficient | Unit of input | Why it's in the model |
+|---|---|---|---|
+| Mean temperature | `0.15` (`ET_COEFF_TEMP`) | °C | Warmer air holds and pulls more moisture |
+| Peak UV index | `0.25` (`ET_COEFF_UV`) | UV index | Proxy for solar energy — the dominant ET driver |
+| Wind speed | `0.02` (`ET_COEFF_WIND`) | km/h | Moving air removes the saturated boundary layer |
+| Relative humidity | `−0.015` (`ET_COEFF_HUMIDITY`) | % | High humidity suppresses evaporation (negative) |
 
-### 2. Effective rain (soil-dependent)
+`Tmean` uses the day's **min and max** temperature (accumulated across the day from the
+temperature sensor), so a day that swings from 12 °C to 30 °C is treated differently from
+a flat 21 °C day even though the average is the same.
 
-Raw rainfall is multiplied by a coefficient that depends on soil type and rain band
-(0–2, 2–5, 5–15, >15 mm). Heavy clay rejects light rain as runoff; sand absorbs more.
+**Clamp (`ET_MIN`=0, `ET_MAX`=8):** ET can never be negative (the model can't "add" water
+through the ET term), and is capped at 8 mm/day — a realistic ceiling for a hot summer day
+in a temperate climate, which guards against a spurious sensor spike blowing out the
+deficit.
 
-### 3. Per-zone deficit update
+> These coefficients are deliberately simple and tunable in `const.py`. They are an
+> *estimate*; the soil-moisture sensor override (§3) is the recommended way to keep the
+> system honest against reality.
+
+---
+
+## 3. Sensors — what HydroBalance reads and why
+
+HydroBalance reads plain Home Assistant sensor entities. You map them in the panel
+(Settings → Weather Sensors). Each is read either continuously (every 15 min) or at a
+specific moment.
+
+| Sensor | Config key | Unit | When read | Used for | If missing |
+|---|---|---|---|---|---|
+| **Temperature** | `sensor_temperature` | °C | Every 15 min | Builds the day's Tmin/Tmax for ET | ET can't run that day |
+| **Forecast Min** | `sensor_temperature_min` | °C | At watering check | **Frost protection** | No frost skip |
+| **Humidity** | `sensor_humidity` | % | At 23:00 calc | ET humidity term | Defaults to 50% |
+| **Wind Speed** | `sensor_wind_speed` | km/h | At 23:00 calc | ET wind term | Defaults to 0 |
+| **UV Index** | `sensor_uv_index` | index | Every 15 min (peak) | ET UV term | Treated as 0 |
+| **Rain** | `sensor_rain` | mm/h (rate) | Every 15 min | Accumulated to daily rainfall | No rain credit |
+| **Rain Forecast** | `sensor_rain_forecast` | mm (next 24 h) | At watering check | **Skip if rain coming** | No forecast skip |
+| **Soil Moisture** *(optional)* | `sensor_soil_moisture` | % VWC | At watering check | **Override skip** | ET estimate used alone |
+
+### How each is processed
+
+- **Temperature** is sampled every 15 minutes; HydroBalance keeps the running **minimum**
+  and **maximum** for the day. Those become `Tmin`/`Tmax` in the ET formula. At local
+  midnight the accumulators reset.
+- **UV index** is sampled every 15 minutes and the **peak** value of the day is kept —
+  the midday maximum best represents the solar energy available for evaporation.
+- **Rain** is read as an **hourly rate** (mm/h, OpenWeatherMap-style). Each 15-minute
+  tick adds `rain × 0.25` mm to the day's running total (¼ hour). At midnight it resets.
+- **Forecast Min** is the *forecast* overnight low. If it's below `FROST_TEMP_LIMIT`
+  (5 °C) the whole watering check is skipped — watering in freezing conditions can damage
+  plants and pipes.
+- **Rain Forecast** is expected to be a "precipitation next 24 h" sensor (mm). If it's
+  above `RAIN_FORECAST_SKIP` (5 mm) and the forecast skip is enabled, watering is skipped
+  — no point watering when meaningful rain is coming.
+- **Soil Moisture** (% volumetric water content) is the reality check. If the measured
+  moisture is above your skip threshold (default 40%), watering is skipped regardless of
+  what the ET estimate says. **A real sensor always beats the model.**
+
+> **Why two temperature sensors?** The plain *Temperature* sensor is the live reading used
+> to build today's actual Tmin/Tmax for ET. The *Forecast Min* is a forward-looking
+> overnight low used purely for the frost decision before the pre-dawn watering run.
+
+---
+
+## 4. Weather source & sensor discovery
+
+You pick a single **weather entity** (e.g. `weather.openweathermap`) as the source. The
+panel's **Re-discover Sensors** button then inspects every `sensor.*` entity that belongs
+to the *same integration* as that weather entity and auto-maps them by device class and
+name heuristics:
+
+- **Temperature** → first `temperature` device-class sensor, *excluding* names containing
+  `forecast`, `min`, `max`, `dew`, `feels`, or `apparent` (so it doesn't grab the dew
+  point or "feels like").
+- **Forecast Min** → a `temperature` sensor whose name contains `min`.
+- **Humidity** → first `humidity` device-class sensor.
+- **Wind Speed** → name contains `wind` and (`speed` or a km/h or m/s unit).
+- **UV Index** → name contains `uv`.
+- **Rain** → name contains `rain` or device class `precipitation`, *not* `forecast`.
+- **Rain Forecast** → name contains `precipitation`/`rain` *and* `forecast` or `24`.
+
+Discovery **merges** over your existing mapping — it only fills fields it finds and never
+wipes a manually set sensor (e.g. your soil-moisture sensor, which discovery doesn't
+touch). Anything it gets wrong, you fix by typing the entity directly into the field.
+
+ET is always calculated from the mapped **sensors**, not from the weather entity's own
+attributes — sensors are more reliable and update more predictably.
+
+---
+
+## 5. Soil types & effective rainfall
+
+Not all rain reaches the root zone. Light rain on baked clay mostly runs off or
+evaporates; the same rain on sand soaks straight in. **Effective rainfall** is the
+fraction of raw rainfall that actually counts against the deficit.
+
+HydroBalance splits rainfall into four **intensity bands** and applies a per-soil
+absorption coefficient to each:
+
+| Rain band | Clay / Heavy | Loam | Sandy |
+|---|---|---|---|
+| **0–2 mm** (light) | `0.00` | `0.15` | `0.30` |
+| **2–5 mm** (moderate) | `0.60` | `0.65` | `0.75` |
+| **5–15 mm** (steady) | `0.70` | `0.75` | `0.85` |
+| **> 15 mm** (heavy) | `0.55` | `0.60` | `0.65` |
 
 ```
-zone_ET      = ET × sun_coefficient
-new_deficit  = clamp(current_deficit + zone_ET − effective_rain,  −20 … 60 mm)
+effective_rain = raw_rain × coefficient[band(raw_rain)]
 ```
 
-### 4. Watering check (sunrise − 1h)
+**Reading the table:**
 
-For each zone, if `deficit > threshold`, the zone is queued. Before watering, the whole
-check is skipped if **any** of these is true:
+- **Clay rejects light rain entirely** (`0.00` for 0–2 mm): a 1 mm drizzle beads up and
+  evaporates before it penetrates heavy soil.
+- **Sand always absorbs the most** in every band — it has large pores and drains fast.
+- **The > 15 mm coefficients drop** for every soil because in a heavy downpour a chunk of
+  the water runs off or drains past the root zone instead of being stored where roots can
+  use it.
+- **The 5–15 mm "steady soak" band is the most efficient** for all soils — long enough to
+  penetrate, gentle enough to avoid runoff.
 
-- forecast Tmin < 5 °C (frost protection)
-- rain forecast > 5 mm (and "skip on forecast" is enabled)
-- measured soil moisture > skip threshold
+### Soil type explained
 
-Then queued zones water sequentially:
+| Soil | Character | Water behaviour | Best HydroBalance fit |
+|---|---|---|---|
+| **Clay / Heavy** | Fine particles, sticky when wet, cracks when dry | Holds a lot of water but absorbs slowly; prone to runoff and waterlogging | Low max-per-cycle, longer intervals (Clay-Safe strategy) |
+| **Loam** | Balanced sand/silt/clay mix — the "ideal" garden soil | Good absorption *and* retention | Balanced strategy |
+| **Sandy** | Coarse particles, gritty | Absorbs fast, drains fast, dries out quickly | Smaller, more frequent watering |
+
+The system has one default soil type, but **each zone can override it** (zone editor →
+Soil Override) if part of your garden differs.
+
+---
+
+## 6. Sun exposure — the per-zone multiplier
+
+Two beds with identical soil dry at different rates if one is shaded. HydroBalance scales
+each zone's ET by a **sun coefficient** between ~0 and 1:
+
+```
+zone_ET = ET × sun_coefficient
+```
+
+A coefficient of `1.0` means full sun (full ET); `0.45` means a heavily shaded spot loses
+less than half as much water. There are two modes.
+
+### Manual mode
+
+Pick one of three presets:
+
+| Setting | Coefficient | Use for |
+|---|---|---|
+| Full Sun | `1.00` | Open lawn, unshaded beds |
+| Partial Shade | `0.70` | Dappled light, half-day sun |
+| Heavy Shade | `0.45` | North side of a wall, under dense trees |
+
+### Auto mode (orientation + shadow geometry)
+
+You describe the obstacle that shades the zone — its **orientation** relative to the zone,
+its **height**, and its **distance** — and HydroBalance computes the coefficient from the
+real path of the sun using `astral`.
+
+**If you give only an orientation** (no height/distance), it uses a fallback table:
+
+| Orientation | N | NE | E | SE | S | SW | W | NW |
+|---|---|---|---|---|---|---|---|---|
+| Coefficient | 0.60 | 0.70 | 0.80 | 0.90 | 0.95 | 0.90 | 0.80 | 0.70 |
+
+(North-facing zones get the least sun in the northern hemisphere; south-facing the most.)
+
+**If you give height and distance**, it runs a full shadow calculation:
+
+1. The day is divided into four solar windows, each weighted by how much of the day's
+   radiation it carries:
+
+   | Window | 06–09 | 09–12 | 12–15 | 15–18 |
+   |---|---|---|---|---|
+   | Weight | 0.15 | 0.30 | 0.35 | 0.20 |
+
+2. For each hour, the sun's **elevation** and **azimuth** are computed for your latitude/
+   longitude. Hours when the sun is below the horizon are ignored.
+3. The obstacle shades the zone in a given hour when **both**:
+   - the sun is roughly *behind* the obstacle (azimuth within 60° of the obstacle's
+     direction), and
+   - the cast shadow is long enough to reach the zone:
+     `shadow_length = height / tan(elevation) > distance`.
+4. The shaded fraction of each window is weighted and summed:
+   `sun_coefficient = 1 − (shaded_weighted / total_weighted)`.
+
+This means a low winter sun (long shadows) shades a zone more than the same obstacle does
+under a high summer sun — the coefficient is recomputed against the current date.
+
+---
+
+## 7. The daily cycle — putting it together
+
+```
+┌─ every 15 min ──────────────────────────────────────────────┐
+│ read sensors → update day's Tmin/Tmax, peak UV, rain total   │
+│ reset accumulators at local midnight                         │
+└──────────────────────────────────────────────────────────────┘
+
+┌─ 23:00 nightly — daily calculation ─────────────────────────┐
+│ ET            = f(Tmin, Tmax, peakUV, wind, humidity)        │
+│ for each zone:                                               │
+│   zone_ET     = ET × sun_coefficient(zone)                   │
+│   eff_rain    = effective_rain(day_rain, zone_soil)          │
+│   deficit    += zone_ET − eff_rain   (clamped −20…60)        │
+└──────────────────────────────────────────────────────────────┘
+
+┌─ sunrise − 1h — watering check ─────────────────────────────┐
+│ skip if: skip-next flag / already watering / frost /         │
+│          rain forecast / soil moisture high                  │
+│ queue zones where deficit > threshold, water them in turn    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Per-zone deficit update at 23:00:
+
+```
+zone_ET     = ET × sun_coefficient
+eff_rain    = effective_rain(daily_rain, zone_soil_override or system_soil)
+new_deficit = clamp(current_deficit + zone_ET − eff_rain,  −20 … +60)
+```
+
+---
+
+## 8. Watering: schedule, skips, duration
+
+### When
+
+The watering check runs **1 hour before sunrise** (computed from your HA location). This
+is the coldest, calmest part of the day, so evaporation loss is minimal and foliage dries
+as the sun comes up — which discourages fungal disease.
+
+### Skip conditions (checked in order, any one aborts the run)
+
+1. **Skip-next flag** set (via the panel or `skip_day` service) — consumed once.
+2. **Watering already in progress.**
+3. **Frost:** forecast Tmin < `FROST_TEMP_LIMIT` (5 °C).
+4. **Rain forecast:** forecast > `RAIN_FORECAST_SKIP` (5 mm) *and* forecast-skip enabled.
+5. **Soil moisture:** measured moisture > skip threshold (default 40% VWC).
+
+### Which zones, and for how long
+
+A zone is queued when `deficit > threshold`. Zones water **sequentially** (one switch at a
+time). For each:
 
 ```
 mm_to_apply      = min(deficit, max_per_cycle)
 duration_minutes = max(1, (mm_to_apply / sprinkler_rate) × 30)
 ```
 
-After a successful run the applied millimetres are subtracted from the deficit.
+`sprinkler_rate` is in **mm per 30 min**, so dividing the target mm by it and multiplying
+by 30 gives minutes. After the run, `deficit −= mm_to_apply` (floored at −20).
 
-### 5. Manual watering
-
-Pressing **Manual Water** on a zone turns its switch on and starts a timer. Pressing
-**Stop Manual** turns it off and credits the deficit:
-
-```
-mm_applied   = (elapsed_minutes / 30) × sprinkler_rate
-new_deficit  = max(0, current_deficit − mm_applied)
-```
-
-The deficit is clamped at **0** — manual watering never drives it negative. Manual runs
-survive a Home Assistant restart: on startup any interrupted run is finalised (elapsed
-time counted, switch turned off).
+The `max_per_cycle` cap prevents dumping a huge deficit all at once — especially important
+on clay, where applying more than the soil can absorb just runs off.
 
 ---
 
-## Installation
+## 9. Manual watering
 
-### HACS (recommended)
+Each zone on the dashboard has a **Manual Water** toggle for on-demand watering:
+
+- **Press it** → the zone's switch turns on and a live timer (mm:ss) starts.
+- **Press Stop Manual** → the switch turns off, and the run is accounted for:
+
+```
+mm_applied  = (elapsed_minutes / 30) × sprinkler_rate
+new_deficit = max(0, current_deficit − mm_applied)
+```
+
+The deficit floor here is **0** (not −20): manual watering credits the soil but never
+drives the balance negative, so a long manual session doesn't suppress automatic watering
+for days afterwards.
+
+**Restart-safe:** if Home Assistant restarts mid-run, on startup HydroBalance finalises
+the interrupted run — it counts the elapsed time up to that point, credits the deficit,
+and turns the switch off (the safety check also force-closes any zone switch left on).
+
+---
+
+## 10. Watering strategies
+
+A strategy is a preset pair of *threshold* (how dry before watering) and *max-per-cycle*
+(how much per run). It sets system defaults; any zone can override both.
+
+| Strategy | Threshold | Max/cycle | Character |
+|---|---|---|---|
+| **Balanced** | 12 mm | 5 mm | Sensible default for most gardens |
+| **Water Saving** | 16 mm | 4 mm | Waters later and lighter — drought-tolerant lawns |
+| **Lush Green** | 8 mm | 6 mm | Waters early and generously — keeps grass vivid |
+| **Clay-Safe** | 14 mm | 3 mm | Small doses so heavy soil absorbs without runoff |
+
+---
+
+## 11. Sprinkler rate — how to measure yours
+
+`sprinkler_rate` is the single most important number for correct run times. It is the
+**depth of water (mm) your sprinkler lays down in 30 minutes** over the area it covers.
+
+### From flow and area (quick estimate)
+
+```
+rate_mm_per_30min = (flow_L_per_hour / area_m²) × 0.5
+```
+
+Example — Gardena OS 140 oscillating sprinkler at ~600 L/h covering ~7 m × ~13 m (≈ 91 m²):
+
+```
+(600 / 91) × 0.5 ≈ 3.3 mm/30min
+```
+
+### By measurement (most accurate — "catch-cup test")
+
+Place several straight-sided containers across the zone, run the sprinkler for 30 minutes,
+measure the average water depth in mm. That depth **is** your `sprinkler_rate`. This
+captures real coverage and uniformity better than the flow estimate.
+
+Set the value per zone in the zone editor, or with the `number.<zone>_sprinkler_rate`
+entity.
+
+---
+
+## 12. Worked example
+
+A south-facing **loam** lawn zone, full sun (`sun_coefficient = 1.0`), Balanced strategy
+(threshold 12 mm), sprinkler rate 3.3 mm/30min, max-per-cycle 5 mm.
+
+**A hot dry day:** Tmin 16 °C, Tmax 31 °C, peak UV 8, wind 10 km/h, humidity 45%, no rain.
+
+```
+Tmean = (31 + 16) / 2 = 23.5
+ET    = 23.5×0.15 + 8×0.25 + 10×0.02 − 45×0.015
+      = 3.525 + 2.0 + 0.2 − 0.675
+      = 5.05 mm
+zone_ET = 5.05 × 1.0 = 5.05 mm
+deficit: 0 → 5.05 mm   (below threshold, no watering)
+```
+
+**A second similar day:** deficit `5.05 → ~10.1 mm` (still below 12).
+
+**A third day, plus 3 mm of rain overnight:**
+
+```
+eff_rain (loam, 2–5 mm band) = 3 × 0.65 = 1.95 mm
+deficit: 10.1 + 5.05 − 1.95 = 13.2 mm   → above 12 mm threshold
+```
+
+At the next sunrise−1h check the zone is queued:
+
+```
+mm_to_apply = min(13.2, 5) = 5 mm
+duration    = (5 / 3.3) × 30 ≈ 45 min
+deficit after watering: 13.2 − 5 = 8.2 mm
+```
+
+The remaining 8.2 mm carries over and will be topped up on subsequent nights as the
+deficit climbs again.
+
+---
+
+## 13. Installation & setup
+
+### Install via HACS (recommended)
 
 1. HACS → **Integrations** → ⋮ → **Custom repositories**.
 2. Add `https://github.com/rusulucian85/hydrobalance` as an **Integration**.
-3. Search for **HydroBalance**, download, and **restart Home Assistant**.
+3. Search **HydroBalance**, download, and **restart Home Assistant**.
 
-### Manual
+### Manual install
 
-Copy `custom_components/hydrobalance/` into your HA `config/custom_components/`
-directory and restart.
+Copy `custom_components/hydrobalance/` into your HA `config/custom_components/` and
+restart.
 
----
-
-## Setup
+### First-time setup
 
 1. **Settings → Devices & Services → Add Integration → HydroBalance.** The config flow
-   only asks for a system name — everything else lives in the panel.
+   only asks for a system name; everything else is in the panel.
 2. Open the **HydroBalance** panel from the sidebar.
 3. **Settings tab:**
-   - Pick your **Weather Entity**, then **Re-discover Sensors** to auto-map temperature,
-     humidity, wind, UV, rain and rain-forecast sensors. Adjust any mapping by hand.
-   - Optionally set a **Soil Moisture** sensor + skip threshold.
-   - Choose **Soil Type** and **Watering Strategy**.
-4. **Zones tab:** add a zone per sprinkler — switch entity, sprinkler rate, thresholds,
+   - Choose your **Weather Entity**, then **Re-discover Sensors**; correct any mapping.
+   - Optionally set a **Soil Moisture** sensor and skip threshold.
+   - Pick **Soil Type** and **Watering Strategy**.
+4. **Zones tab:** add one zone per sprinkler — switch entity, sprinkler rate, thresholds,
    and sun exposure.
-
-### Calculating your sprinkler rate
-
-`sprinkler_rate` is in **mm per 30 minutes**. Compute it from your sprinkler's flow and
-the area it covers:
-
-```
-rate_mm_per_30min = (flow_L_per_hour / area_m2) × 0.5
-```
-
-Example: a Gardena OS 140 at ~600 L/h covering ~7 m × ~13 m (≈ 91 m²) → ≈ **3.3 mm/30min**.
 
 ---
 
-## The panel
+## 14. The panel
 
-- **Dashboard** — today's ET / rain / temperature / UV, optional soil-moisture card, a
-  status card per zone (deficit bar, sun coefficient, threshold), per-zone **Manual
-  Water** toggle with live timer, and global actions (Skip Next, Force Water All, Reset
-  All Deficits).
-- **Zones** — add / edit / delete zones.
+The custom panel is served as a `panel_custom` element (it runs inside the authenticated
+HA frontend, so it works in the iOS/Android app too). The JS is cache-busted by version.
+
+- **Dashboard** — today's ET / rain / effective rain / Tmin / Tmax / peak UV; an optional
+  soil-moisture card; a status card per zone (deficit bar, sun coefficient, threshold); a
+  per-zone **Manual Water** toggle with live timer; and global actions: **Skip Next
+  Watering**, **Force Water All**, **Reset All Deficits**.
+- **Zones** — add / edit / delete zones, including sun-exposure mode and soil override.
 - **Settings** — weather source, sensor mapping, soil moisture, soil type & strategy.
 
 ---
 
-## Entities
+## 15. Entities
 
-Per system:
+**System sensors:**
 
-| Entity | Description |
-|---|---|
-| `sensor.*_daily_et` | Daily evapotranspiration (mm) |
-| `sensor.*_effective_rain` | Soil-adjusted effective rainfall (mm) |
-| `sensor.*_rain_today` | Raw accumulated rainfall (mm) |
+| Entity | Unit | Description |
+|---|---|---|
+| `sensor.*_daily_et` | mm | Daily evapotranspiration |
+| `sensor.*_effective_rain` | mm | Soil-adjusted effective rainfall |
+| `sensor.*_rain_today` | mm | Raw accumulated rainfall |
 
-Per zone:
+**Per zone:**
 
-| Entity | Description |
-|---|---|
-| `sensor.<zone>_water_deficit` | Current water deficit (mm) |
-| `sensor.<zone>_status` | `ok` / `needs_water` / `watering` |
-| `sensor.<zone>_sun_exposure` | Sun coefficient (0–1) |
-| `binary_sensor.<zone>_needs_water` | Problem class — on when deficit > threshold |
-| `switch.<zone>_sprinkler` | The zone's sprinkler switch |
-| `number.<zone>_sprinkler_rate` | Sprinkler rate (mm/30min) |
-| `number.<zone>_watering_threshold` | Deficit threshold (mm) |
-| `number.<zone>_max_per_cycle` | Max water per cycle (mm) |
+| Entity | Unit | Description |
+|---|---|---|
+| `sensor.<zone>_water_deficit` | mm | Current deficit (attrs: sun coefficient, status) |
+| `sensor.<zone>_status` | — | `ok` / `needs_water` / `watering` |
+| `sensor.<zone>_sun_exposure` | — | Sun coefficient (0–1) |
+| `binary_sensor.<zone>_needs_water` | — | Problem class; on when deficit > threshold |
+| `switch.<zone>_sprinkler` | — | The zone's sprinkler switch |
+| `number.<zone>_sprinkler_rate` | mm/30min | Sprinkler rate (0.5–10, step 0.1) |
+| `number.<zone>_watering_threshold` | mm | Deficit threshold (5–30, step 1) |
+| `number.<zone>_max_per_cycle` | mm | Max water per cycle (1–15, step 0.5) |
 
 ---
 
-## Services
+## 16. Services & WebSocket API
+
+**Services** (Developer Tools → Services, or automations):
 
 | Service | Fields | Description |
 |---|---|---|
-| `hydrobalance.force_water` | `zone_id?`, `mm_to_apply?` | Water now (a zone, or all) |
-| `hydrobalance.skip_day` | — | Skip the next scheduled watering check |
-| `hydrobalance.reset_deficit` | `zone_id?` | Reset deficit to 0 (a zone, or all) |
+| `hydrobalance.force_water` | `zone_id?`, `mm_to_apply?` | Water now (one zone or all) |
+| `hydrobalance.skip_day` | — | Skip the next watering check |
+| `hydrobalance.reset_deficit` | `zone_id?` | Reset deficit to 0 (one zone or all) |
 
-Manual watering is also exposed to the panel over the WebSocket API
-(`hydrobalance/manual_water`).
+**WebSocket API** (used by the panel):
+
+| Command | Payload | Purpose |
+|---|---|---|
+| `hydrobalance/config` | — | Read full configuration |
+| `hydrobalance/config/save` | zones, soil, strategy, sensors, … | Persist configuration |
+| `hydrobalance/status` | — | Read live deficits / ET / status |
+| `hydrobalance/discover_sensors` | `weather_entity` | Auto-map sensors |
+| `hydrobalance/force_water` | `zone_id?`, `mm?` | Force watering |
+| `hydrobalance/manual_water` | `zone_id`, `on` | Manual on/off toggle |
+| `hydrobalance/skip_day` | — | Skip next check |
+| `hydrobalance/reset_deficit` | `zone_id?` | Reset deficit |
 
 ---
 
-## Tuning (`const.py`)
+## 17. Constants reference
+
+All in `custom_components/hydrobalance/const.py`.
 
 | Constant | Default | Meaning |
 |---|---|---|
-| `ET_COEFF_TEMP / UV / WIND / HUMIDITY` | 0.15 / 0.25 / 0.02 / 0.015 | ET formula weights |
-| `ET_MIN / ET_MAX` | 0 / 8 mm | ET clamp |
+| `ET_COEFF_TEMP` | 0.15 | ET weight on mean temperature (°C) |
+| `ET_COEFF_UV` | 0.25 | ET weight on peak UV index |
+| `ET_COEFF_WIND` | 0.02 | ET weight on wind speed (km/h) |
+| `ET_COEFF_HUMIDITY` | 0.015 | ET reduction per % relative humidity |
+| `ET_MIN` / `ET_MAX` | 0 / 8 | ET clamp (mm/day) |
 | `FROST_TEMP_LIMIT` | 5 °C | Skip watering below this forecast Tmin |
 | `RAIN_FORECAST_SKIP` | 5 mm | Skip watering above this forecast rain |
-| `DEFICIT_MIN / DEFICIT_MAX` | −20 / 60 mm | Deficit clamp |
+| `DEFICIT_MIN` / `DEFICIT_MAX` | −20 / 60 | Deficit clamp (mm) |
+| `DEFAULT_SPRINKLER_RATE` | 2.0 | mm per 30 min |
+| `DEFAULT_DEFICIT_THRESHOLD` | 12 | mm |
+| `DEFAULT_MAX_PER_CYCLE` | 5 | mm |
+| `DEFAULT_MOISTURE_SKIP_THRESHOLD` | 40 | % VWC |
 | `SOIL_TYPES` | clay / loam / sandy | Per-band rain absorption coefficients |
 | `STRATEGIES` | balanced / water_saving / lush_green / clay_safe | Threshold + max-per-cycle presets |
+| `SUN_EXPOSURE_MANUAL` | 1.0 / 0.7 / 0.45 | Full / partial / heavy shade |
+| `SUN_ORIENTATION_FALLBACK` | N…NW | Coefficients when only orientation is set |
+| `SOLAR_RADIATION_WEIGHTS` | 0.15 / 0.30 / 0.35 / 0.20 | Daily radiation share per time window |
 
 ---
 
-## Troubleshooting
+## 18. Troubleshooting
 
-- **No watering happens** — expected when every deficit is 0. Deficits build nightly at
-  23:00; watering starts automatically once a zone crosses its threshold. Use **Force
-  Water** or **Manual Water** to test immediately.
-- **ET stays blank** — temperature data is missing. Check the sensor mapping in Settings
-  and that the weather integration is providing values.
-- **Panel shows an old version after updating** — restart Home Assistant, then fully
-  close and reopen the app (the WebView caches the panel JS; the integration appends
+- **Nothing waters** — expected when every deficit is 0. Deficits build nightly at 23:00;
+  watering begins automatically once a zone crosses its threshold. Use **Force Water** or
+  **Manual Water** to test immediately.
+- **ET / Tmin / Tmax stay blank** — temperature data is missing for the day. Check the
+  Temperature sensor mapping and that the weather integration is delivering values.
+- **Discovery mapped the wrong temperature sensor** — it excludes dew-point/feels-like by
+  name, but you can always type the correct entity into the field and Save Sensors.
+- **Rain never registers** — the Rain sensor is read as an **hourly rate** (mm/h). A
+  cumulative-total sensor will be misread; map a rate sensor or a "precipitation
+  intensity" sensor.
+- **Panel shows an old version after updating** — restart Home Assistant, then fully close
+  and reopen the app (the WebView caches the panel JS; the integration appends
   `?v=<version>` to bust it).
+- **A zone watered far too long/short** — your `sprinkler_rate` is off. Run the catch-cup
+  test (§11) and set the measured value.
 
 ---
 
-## Changelog
+## 19. Changelog
 
-- **0.4.0** — Per-zone manual watering toggle with live timer; elapsed run-time is
-  credited back to the deficit (clamped at 0) and survives restarts.
+- **0.4.0** — Per-zone manual watering toggle with live timer; elapsed run time is
+  credited to the deficit (clamped at 0) and survives restarts. Full technical README.
 - **0.3.x** — Weather source & sensor mapping moved into the panel; sunrise−1h watering
-  schedule; panel served as a `panel_custom` element; version cache-busting.
+  schedule; panel served as a `panel_custom` element; version cache-busting; editable
+  sensor mappings with smarter discovery.
 - **0.1.0** — Initial release: ET model, per-zone deficits, soil types, sun modelling,
   custom panel.
