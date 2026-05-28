@@ -112,7 +112,6 @@ CONF_WEATHER_ENTITY = "weather_entity"
 
 CONF_SENSOR_TEMPERATURE = "sensor_temperature"
 CONF_SENSOR_TEMPERATURE_MIN = "sensor_temperature_min"
-CONF_SENSOR_TEMPERATURE_MAX = "sensor_temperature_max"
 CONF_SENSOR_HUMIDITY = "sensor_humidity"
 CONF_SENSOR_WIND_SPEED = "sensor_wind_speed"
 CONF_SENSOR_UV_INDEX = "sensor_uv_index"

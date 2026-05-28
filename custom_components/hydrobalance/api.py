@@ -116,7 +116,6 @@ def ws_discover_sensors(hass: HomeAssistant, connection: websocket_api.ActiveCon
     sensors = {
         "sensor_temperature": None,
         "sensor_temperature_min": None,
-        "sensor_temperature_max": None,
         "sensor_humidity": None,
         "sensor_wind_speed": None,
         "sensor_uv_index": None,
@@ -150,10 +149,6 @@ def ws_discover_sensors(hass: HomeAssistant, connection: websocket_api.ActiveCon
         if device_class == "temperature" and not sensors["sensor_temperature_min"]:
             if "min" in eid:
                 sensors["sensor_temperature_min"] = entry.entity_id
-
-        if device_class == "temperature" and not sensors["sensor_temperature_max"]:
-            if "max" in eid:
-                sensors["sensor_temperature_max"] = entry.entity_id
 
         if device_class == "humidity" and not sensors["sensor_humidity"]:
             sensors["sensor_humidity"] = entry.entity_id

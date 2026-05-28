@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.3.3 &mdash; Smart Irrigation</div>
+        <div class="version">v0.3.4 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -578,8 +578,7 @@ class HydroBalancePanel extends HTMLElement {
     const sensors = (entry && entry.sensors) || {};
     const sensorKeys = [
       ['sensor_temperature', 'Temperature'],
-      ['sensor_temperature_min', 'Temperature Min'],
-      ['sensor_temperature_max', 'Temperature Max'],
+      ['sensor_temperature_min', 'Forecast Min (frost check)'],
       ['sensor_humidity', 'Humidity'],
       ['sensor_wind_speed', 'Wind Speed'],
       ['sensor_uv_index', 'UV Index'],
@@ -784,7 +783,7 @@ class HydroBalancePanel extends HTMLElement {
     const entry = this._config[this._currentEntryId];
     const sensors = { ...((entry && entry.sensors) || {}) };
     const keys = [
-      'sensor_temperature', 'sensor_temperature_min', 'sensor_temperature_max',
+      'sensor_temperature', 'sensor_temperature_min',
       'sensor_humidity', 'sensor_wind_speed', 'sensor_uv_index',
       'sensor_rain', 'sensor_rain_forecast',
     ];
@@ -792,6 +791,7 @@ class HydroBalancePanel extends HTMLElement {
       const v = this.$('ws-' + k).value.trim();
       if (v) sensors[k] = v; else delete sensors[k];
     }
+    delete sensors.sensor_temperature_max;  // retired field
     try {
       await this._ws('hydrobalance/config/save', { entry_id: this._currentEntryId, sensors });
       this._toast('Sensors saved!');
