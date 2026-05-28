@@ -13,7 +13,7 @@ from astral.sun import azimuth, elevation
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.event import async_track_sunrise, async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.sun import get_astral_location
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -206,10 +206,11 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         )
 
-        # Watering check at sunrise - 1h (approximated as 05:00, adjusted by sun entity)
+        # Watering check 1h before sunrise — coolest, lowest wind, so the
+        # least evaporation loss and foliage dries off during the day.
         self._unsub_daily.append(
-            async_track_time_change(
-                self.hass, self._async_watering_check, hour=5, minute=0, second=0
+            async_track_sunrise(
+                self.hass, self._async_watering_check, offset=timedelta(hours=-1)
             )
         )
 
@@ -512,7 +513,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     # ─── Watering Check (sunrise - 1h) ───────────────────────────────────────
 
-    async def _async_watering_check(self, _now: datetime) -> None:
+    async def _async_watering_check(self, _now: datetime | None = None) -> None:
         """Check if any zones need watering."""
         if self._skip_next:
             LOGGER.info("Watering skipped (skip_next flag)")
