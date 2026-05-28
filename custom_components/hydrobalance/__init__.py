@@ -9,6 +9,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from homeassistant.loader import async_get_integration
 
 from .api import async_register_api
 from .const import DOMAIN, LOGGER, PLATFORMS
@@ -56,6 +57,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 cache_headers=False,
             )
         ])
+        # Append the integration version so the frontend re-fetches the panel
+        # JS on every update instead of serving a stale cached copy.
+        integration = await async_get_integration(hass, DOMAIN)
         frontend.async_register_built_in_panel(
             hass,
             component_name="custom",
@@ -65,7 +69,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             config={
                 "_panel_custom": {
                     "name": "hydrobalance-panel",
-                    "js_url": f"{PANEL_URL}/hydrobalance-panel.js",
+                    "js_url": f"{PANEL_URL}/hydrobalance-panel.js?v={integration.version}",
                     "embed_iframe": False,
                     "trust_external": False,
                 }
