@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.5.0 &mdash; Smart Irrigation</div>
+        <div class="version">v0.6.0 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -354,6 +354,17 @@ const TEMPLATE = `
               <input type="number" id="zone-obs-distance" step="0.5" min="0" placeholder="e.g. 5">
             </div>
           </div>
+        </div>
+        <div class="form-group">
+          <label>Crop Coefficient (Kc) — plant water demand vs. reference</label>
+          <select id="zone-kc">
+            <option value="0.4">0.4 — Drought-tolerant / native</option>
+            <option value="0.6">0.6 — Shrubs / mixed beds</option>
+            <option value="0.8">0.8 — Cool-season turf (low)</option>
+            <option value="1">1.0 — Reference / standard lawn</option>
+            <option value="1.1">1.1 — Vegetable garden</option>
+            <option value="1.2">1.2 — High-demand / dense crop</option>
+          </select>
         </div>
         <div class="form-group">
           <label>Soil Override (leave empty for system default)</label>
@@ -665,6 +676,7 @@ class HydroBalancePanel extends HTMLElement {
             <span>Switch: ${this._esc(zone.switch_entity || 'none')}</span>
             <span>Rate: ${zone.sprinkler_rate || 2.0} mm/30min</span>
             <span>Sun: ${this._esc(sunText)}</span>
+            <span>Kc: ${zone.crop_coefficient != null ? zone.crop_coefficient : 1.0}</span>
           </div>
         </div>`;
     }
@@ -735,6 +747,7 @@ class HydroBalancePanel extends HTMLElement {
       this.$('zone-obs-height').value = zone.obstacle_height || '';
       this.$('zone-obs-distance').value = zone.obstacle_distance || '';
       this.$('zone-soil-override').value = zone.soil_override || '';
+      this.$('zone-kc').value = zone.crop_coefficient != null ? String(zone.crop_coefficient) : '1';
     } else {
       title.textContent = 'Add Zone';
       deleteBtn.classList.add('hidden');
@@ -750,6 +763,7 @@ class HydroBalancePanel extends HTMLElement {
       this.$('zone-obs-height').value = '';
       this.$('zone-obs-distance').value = '';
       this.$('zone-soil-override').value = '';
+      this.$('zone-kc').value = '1';
     }
     this.toggleSunFields();
     this._populatePicker('dl-switches', 'switch');
@@ -790,6 +804,7 @@ class HydroBalancePanel extends HTMLElement {
       obstacle_height: parseFloat(this.$('zone-obs-height').value) || null,
       obstacle_distance: parseFloat(this.$('zone-obs-distance').value) || null,
       soil_override: this.$('zone-soil-override').value || null,
+      crop_coefficient: parseFloat(this.$('zone-kc').value) || 1.0,
     };
 
     if (!zone.name) { this._toast('Zone name is required'); return; }

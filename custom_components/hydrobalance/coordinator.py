@@ -51,6 +51,8 @@ from .const import (
     CONF_ZONE_OBSTACLE_HEIGHT,
     CONF_ZONE_OBSTACLE_DISTANCE,
     CONF_ZONE_SOIL_OVERRIDE,
+    CONF_ZONE_CROP_COEFFICIENT,
+    DEFAULT_CROP_COEFFICIENT,
     DEFAULT_SPRINKLER_RATE,
     DEFAULT_DEFICIT_THRESHOLD,
     DEFAULT_MAX_PER_CYCLE,
@@ -420,8 +422,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             zone_soil = zone.get(CONF_ZONE_SOIL_OVERRIDE) or system_soil
             eff_rain = self.calculate_effective_rain(rain, zone_soil)
 
-            # Zone ET adjusted by sun exposure
-            zone_et = et * sun_coeff
+            # Zone ET adjusted by sun exposure and crop coefficient
+            kc = zone.get(CONF_ZONE_CROP_COEFFICIENT, DEFAULT_CROP_COEFFICIENT)
+            zone_et = et * sun_coeff * kc
 
             # Update deficit
             current = self._zone_deficits.get(zid, 0.0)
@@ -430,8 +433,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._zone_deficits[zid] = round(new_deficit, 1)
 
             LOGGER.info(
-                "Zone %s: ET=%.2f×%.2f=%.2fmm, EffRain=%.2fmm, Deficit: %.1f→%.1f",
-                zid, et, sun_coeff, zone_et, eff_rain, current, new_deficit,
+                "Zone %s: ET=%.2f×%.2f×Kc%.2f=%.2fmm, EffRain=%.2fmm, Deficit: %.1f→%.1f",
+                zid, et, sun_coeff, kc, zone_et, eff_rain, current, new_deficit,
             )
 
         self._last_calc_date = today_str
