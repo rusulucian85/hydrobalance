@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import math
 from collections import deque
 from datetime import datetime, timedelta, date
 from typing import Any
-
-from astral import LocationInfo
-from astral.sun import azimuth, elevation
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -18,26 +14,17 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.sun import get_astral_location
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+from . import calc
 from .const import (
     DOMAIN,
     LOGGER,
     STORAGE_VERSION,
     STORAGE_KEY_PREFIX,
-    ET_COEFF_TEMP,
-    ET_COEFF_UV,
-    ET_COEFF_WIND,
-    ET_COEFF_HUMIDITY,
-    ET_MIN,
-    ET_MAX,
     DEFICIT_MIN,
     DEFICIT_MAX,
     FROST_TEMP_LIMIT,
     RAIN_FORECAST_SKIP,
-    SOIL_TYPES,
     STRATEGIES,
-    SUN_EXPOSURE_MANUAL,
-    SUN_ORIENTATION_FALLBACK,
-    SOLAR_RADIATION_WEIGHTS,
     CONF_SOIL_TYPE,
     CONF_STRATEGY,
     CONF_ZONES,
@@ -339,40 +326,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     # ─── ET Calculation ───────────────────────────────────────────────────────
 
-    @staticmethod
-    def calculate_et(
-        tmin: float, tmax: float, uv: float, wind: float, humidity: float
-    ) -> float:
-        """Calculate daily evapotranspiration in mm.
-
-        ET = (Tmean × 0.15) + (UV × 0.25) + (wind_km_h × 0.02) - (humidity% × 0.015)
-        Clamped to 0-8 mm/day.
-        """
-        tmean = (tmax + tmin) / 2
-        et = (
-            tmean * ET_COEFF_TEMP
-            + uv * ET_COEFF_UV
-            + wind * ET_COEFF_WIND
-            - humidity * ET_COEFF_HUMIDITY
-        )
-        return max(ET_MIN, min(ET_MAX, round(et, 2)))
-
-    @staticmethod
-    def calculate_effective_rain(rain_mm: float, soil_type: str) -> float:
-        """Calculate effective precipitation based on soil type.
-
-        Rain bands: 0-2mm, 2-5mm, 5-15mm, >15mm
-        Each soil type has different absorption coefficients per band.
-        """
-        coefficients = SOIL_TYPES.get(soil_type, SOIL_TYPES["clay"])["coefficients"]
-
-        if rain_mm < 2:
-            return round(rain_mm * coefficients[0], 2)
-        if rain_mm < 5:
-            return round(rain_mm * coefficients[1], 2)
-        if rain_mm <= 15:
-            return round(rain_mm * coefficients[2], 2)
-        return round(rain_mm * coefficients[3], 2)
+    calculate_et = staticmethod(calc.calculate_et)
+    calculate_effective_rain = staticmethod(calc.calculate_effective_rain)
 
     # ─── Sun Coefficient ──────────────────────────────────────────────────────
 
@@ -382,7 +337,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if mode == "manual":
             exposure = zone.get(CONF_ZONE_SUN_EXPOSURE, "full_sun")
-            return SUN_EXPOSURE_MANUAL.get(exposure, 1.0)
+            return calc.manual_sun_coefficient(exposure)
 
         # Auto mode
         orientation = zone.get(CONF_ZONE_ORIENTATION)
@@ -394,74 +349,17 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # If no obstacle dimensions, use fallback coefficients
         if not obstacle_height or not obstacle_distance:
-            return SUN_ORIENTATION_FALLBACK.get(orientation, 0.80)
+            return calc.orientation_fallback(orientation)
 
         # Full shadow calculation using astral
-        return self._calculate_shadow_coefficient(
-            orientation, obstacle_height, obstacle_distance
+        return calc.shadow_coefficient(
+            self.hass.config.latitude,
+            self.hass.config.longitude,
+            datetime.now().date(),
+            orientation,
+            obstacle_height,
+            obstacle_distance,
         )
-
-    def _calculate_shadow_coefficient(
-        self, orientation: str, obstacle_height: float, obstacle_distance: float
-    ) -> float:
-        """Calculate shadow coefficient using sun position geometry."""
-        lat = self.hass.config.latitude
-        lon = self.hass.config.longitude
-        today = datetime.now().date()
-
-        # Convert orientation to azimuth (direction zone faces FROM obstacle)
-        orientation_azimuths = {
-            "N": 180,   # Zone is north of obstacle → obstacle is south → blocks sun from south
-            "NE": 225,
-            "E": 270,
-            "SE": 315,
-            "S": 0,
-            "SW": 45,
-            "W": 90,
-            "NW": 135,
-        }
-        obstacle_azimuth = orientation_azimuths.get(orientation, 180)
-
-        location = LocationInfo(latitude=lat, longitude=lon)
-        shaded_weight = 0.0
-        total_weight = 0.0
-
-        for (h_start, h_end), weight in SOLAR_RADIATION_WEIGHTS.items():
-            hours_shaded = 0
-            hours_total = h_end - h_start
-
-            for h in range(h_start, h_end):
-                dt = datetime(today.year, today.month, today.day, h, 30)
-                try:
-                    sun_elev = elevation(location.observer, dt)
-                    sun_az = azimuth(location.observer, dt)
-                except Exception:
-                    continue
-
-                if sun_elev <= 0:
-                    continue
-
-                # Check if sun is behind the obstacle relative to zone
-                az_diff = abs(sun_az - obstacle_azimuth)
-                if az_diff > 180:
-                    az_diff = 360 - az_diff
-
-                # Shadow reaches zone if sun is roughly behind obstacle (within 60°)
-                # and shadow length exceeds distance
-                if az_diff < 60:
-                    shadow_length = obstacle_height / math.tan(math.radians(sun_elev))
-                    if shadow_length > obstacle_distance:
-                        hours_shaded += 1
-
-            if hours_total > 0:
-                shade_fraction = hours_shaded / hours_total
-                shaded_weight += shade_fraction * weight
-                total_weight += weight
-
-        if total_weight == 0:
-            return 1.0
-
-        return round(1.0 - (shaded_weight / total_weight), 2)
 
     # ─── Daily Calculation (23:00) ────────────────────────────────────────────
 

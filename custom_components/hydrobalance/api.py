@@ -69,7 +69,11 @@ async def ws_save_config(hass: HomeAssistant, connection: websocket_api.ActiveCo
         return
 
     # Update stored configuration
+    zone_ids_changed = False
     if "zones" in msg:
+        old_ids = {z.get("id") for z in coordinator._store_data.get("zones", [])}
+        new_ids = {z.get("id") for z in msg["zones"]}
+        zone_ids_changed = old_ids != new_ids
         coordinator._store_data["zones"] = msg["zones"]
     if "soil_type" in msg:
         coordinator._store_data["soil_type"] = msg["soil_type"]
@@ -89,6 +93,12 @@ async def ws_save_config(hass: HomeAssistant, connection: websocket_api.ActiveCo
 
     LOGGER.info("Configuration saved from panel for entry %s", entry_id)
     connection.send_result(msg["id"], {"success": True})
+
+    # Adding or removing a zone changes the set of per-zone entities, which are
+    # only created during entry setup. Reload so they appear/disappear without a
+    # manual Home Assistant restart. Persisted deficits survive the reload.
+    if zone_ids_changed:
+        hass.config_entries.async_schedule_reload(entry_id)
 
 
 @websocket_api.websocket_command({

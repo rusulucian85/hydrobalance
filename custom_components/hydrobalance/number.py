@@ -80,6 +80,7 @@ class HydroBalanceSprinklerRateNumber(HydroBalanceBaseNumber):
         if zone:
             zone[CONF_ZONE_SPRINKLER_RATE] = value
         self.async_write_ha_state()
+        await self.coordinator.async_save_panel_config()
 
 
 class HydroBalanceDeficitThresholdNumber(HydroBalanceBaseNumber):
@@ -109,6 +110,7 @@ class HydroBalanceDeficitThresholdNumber(HydroBalanceBaseNumber):
         if zone:
             zone[CONF_ZONE_DEFICIT_THRESHOLD] = value
         self.async_write_ha_state()
+        await self.coordinator.async_save_panel_config()
 
 
 class HydroBalanceMaxPerCycleNumber(HydroBalanceBaseNumber):
@@ -138,3 +140,4 @@ class HydroBalanceMaxPerCycleNumber(HydroBalanceBaseNumber):
         if zone:
             zone[CONF_ZONE_MAX_PER_CYCLE] = value
         self.async_write_ha_state()
+        await self.coordinator.async_save_panel_config()
