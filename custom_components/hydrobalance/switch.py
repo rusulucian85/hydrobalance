@@ -19,12 +19,41 @@ async def async_setup_entry(
     """Set up HydroBalance zone switches."""
     coordinator: HydroBalanceCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities = [
+    entities: list[SwitchEntity] = [HydroBalanceEnableSwitch(coordinator, entry)]
+    entities.extend(
         HydroBalanceZoneSwitch(coordinator, entry, zone)
         for zone in coordinator.zones
         if zone.get(CONF_ZONE_SWITCH)
-    ]
+    )
     async_add_entities(entities)
+
+
+class HydroBalanceEnableSwitch(
+    CoordinatorEntity[HydroBalanceCoordinator], SwitchEntity
+):
+    """Master enable switch for automatic watering."""
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:power"
+    _attr_name = "Automatic Watering"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_enabled"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)},
+        }
+
+    @property
+    def is_on(self) -> bool:
+        data = self.coordinator.data or {}
+        return bool(data.get("system", {}).get("enabled", True))
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self.coordinator.async_set_enabled(True)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self.coordinator.async_set_enabled(False)
 
 
 class HydroBalanceZoneSwitch(

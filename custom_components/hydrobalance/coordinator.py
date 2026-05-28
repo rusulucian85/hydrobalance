@@ -82,6 +82,10 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._watering_active = False
         self._watering_task: asyncio.Task | None = None
         self._skip_next = False
+        # Master enable — when False, automatic watering is suspended.
+        self._enabled = True
+        # Rain delay / vacation: ISO timestamp until which auto watering pauses.
+        self._rain_delay_until: str | None = None
         # Manual override: zone_id -> ISO start timestamp while running
         self._manual_active: dict[str, str] = {}
 
@@ -179,6 +183,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 else None
             )
             self._manual_active = stored.get("manual_active", {})
+            self._enabled = stored.get("enabled", True)
+            self._rain_delay_until = stored.get("rain_delay_until")
             # Load panel-managed config
             self._store_data["zones"] = stored.get("zones", [])
             self._store_data["soil_type"] = stored.get("soil_type", "clay")
@@ -324,6 +330,11 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "moisture": self._read_sensor(CONF_SENSOR_SOIL_MOISTURE),
                 "skip_threshold": self.moisture_skip_threshold,
             },
+            "system": {
+                "enabled": self._enabled,
+                "rain_delay_until": self._rain_delay_until,
+                "rain_delay_active": self.rain_delay_active,
+            },
         }
 
     # ─── Sensor Reading ───────────────────────────────────────────────────────
@@ -443,8 +454,25 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     # ─── Watering Check (sunrise - 1h) ───────────────────────────────────────
 
+    @property
+    def rain_delay_active(self) -> bool:
+        """Whether a rain-delay/vacation pause is currently in effect."""
+        if not self._rain_delay_until:
+            return False
+        return datetime.now() < datetime.fromisoformat(self._rain_delay_until)
+
     async def _async_watering_check(self, _now: datetime | None = None) -> None:
         """Check if any zones need watering."""
+        if not self._enabled:
+            LOGGER.info("Watering skipped (system disabled)")
+            self._log_event("skipped", reason="disabled")
+            return
+
+        if self.rain_delay_active:
+            LOGGER.info("Watering skipped (rain delay until %s)", self._rain_delay_until)
+            self._log_event("skipped", reason="rain_delay")
+            return
+
         if self._skip_next:
             LOGGER.info("Watering skipped (skip_next flag)")
             self._skip_next = False
@@ -675,6 +703,28 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._persist()
         await self.async_request_refresh()
 
+    async def async_set_enabled(self, enabled: bool) -> None:
+        """Enable or disable automatic watering system-wide."""
+        self._enabled = enabled
+        LOGGER.info("HydroBalance %s", "enabled" if enabled else "disabled")
+        await self._persist()
+        await self.async_request_refresh()
+
+    async def async_set_rain_delay(self, days: float) -> None:
+        """Pause automatic watering for the next `days` days (vacation/rain).
+
+        Passing 0 (or less) clears any active delay.
+        """
+        if days and days > 0:
+            until = datetime.now() + timedelta(days=days)
+            self._rain_delay_until = until.isoformat()
+            LOGGER.info("Rain delay set until %s (%s days)", self._rain_delay_until, days)
+        else:
+            self._rain_delay_until = None
+            LOGGER.info("Rain delay cleared")
+        await self._persist()
+        await self.async_request_refresh()
+
     async def async_reset_deficit(self, zone_id: str | None = None) -> None:
         """Reset water deficit to 0 for a zone or all zones."""
         if zone_id:
@@ -785,6 +835,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "daily_rain": self._daily_rain,
             "today": self._today.isoformat() if self._today else None,
             "manual_active": self._manual_active,
+            "enabled": self._enabled,
+            "rain_delay_until": self._rain_delay_until,
             # Panel-managed config
             "zones": self._store_data.get("zones", []),
             "soil_type": self._store_data.get("soil_type", "clay"),

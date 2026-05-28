@@ -23,6 +23,8 @@ def async_register_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_manual_water)
     websocket_api.async_register_command(hass, ws_skip_day)
     websocket_api.async_register_command(hass, ws_reset_deficit)
+    websocket_api.async_register_command(hass, ws_set_enabled)
+    websocket_api.async_register_command(hass, ws_set_rain_delay)
 
 
 @websocket_api.websocket_command({
@@ -228,5 +230,31 @@ async def ws_reset_deficit(hass: HomeAssistant, connection: websocket_api.Active
     """Reset deficit."""
     for coordinator in hass.data.get(DOMAIN, {}).values():
         await coordinator.async_reset_deficit(msg.get("zone_id"))
+        break
+    connection.send_result(msg["id"], {"success": True})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "hydrobalance/set_enabled",
+    vol.Required("enabled"): bool,
+})
+@websocket_api.async_response
+async def ws_set_enabled(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Enable or disable automatic watering."""
+    for coordinator in hass.data.get(DOMAIN, {}).values():
+        await coordinator.async_set_enabled(msg["enabled"])
+        break
+    connection.send_result(msg["id"], {"success": True})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "hydrobalance/set_rain_delay",
+    vol.Required("days"): vol.Coerce(float),
+})
+@websocket_api.async_response
+async def ws_set_rain_delay(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Pause automatic watering for N days (0 clears)."""
+    for coordinator in hass.data.get(DOMAIN, {}).values():
+        await coordinator.async_set_rain_delay(msg["days"])
         break
     connection.send_result(msg["id"], {"success": True})

@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.6.0 &mdash; Smart Irrigation</div>
+        <div class="version">v0.7.0 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -185,6 +185,17 @@ const TEMPLATE = `
       <div class="card">
         <h2>Recent Activity</h2>
         <div id="activity-list"><div class="empty-state"><p>No activity yet.</p></div></div>
+      </div>
+
+      <div class="card">
+        <h2>System</h2>
+        <div id="system-status" style="margin-bottom:12px;"></div>
+        <div class="actions">
+          <button class="btn btn-outline" id="enable-toggle-btn" onclick="window.__hb.toggleEnabled()">Disable Watering</button>
+          <button class="btn btn-warning" onclick="window.__hb.setRainDelay(3)">Rain Delay 3d</button>
+          <button class="btn btn-warning" onclick="window.__hb.setRainDelay(7)">Vacation 7d</button>
+          <button class="btn btn-outline" id="clear-delay-btn" onclick="window.__hb.setRainDelay(0)">Clear Delay</button>
+        </div>
       </div>
 
       <div class="card">
@@ -567,6 +578,36 @@ class HydroBalancePanel extends HTMLElement {
     container.innerHTML = html;
     this._ensureCronTicker();
     this._renderActivity(s.events || []);
+    this._renderSystem(s.system || {});
+  }
+
+  _renderSystem(sys) {
+    const statusEl = this.$('system-status');
+    const toggleBtn = this.$('enable-toggle-btn');
+    if (!statusEl || !toggleBtn) return;
+
+    const enabled = sys.enabled !== false;
+    const delayActive = !!sys.rain_delay_active;
+    this._enabled = enabled;
+
+    let msg, color;
+    if (!enabled) {
+      msg = 'Automatic watering is DISABLED'; color = 'var(--danger)';
+    } else if (delayActive) {
+      const until = sys.rain_delay_until ? new Date(sys.rain_delay_until) : null;
+      const untilTxt = until ? until.toLocaleString() : '';
+      msg = `Paused (rain delay) until ${untilTxt}`; color = 'var(--warning)';
+    } else {
+      msg = 'Automatic watering is active'; color = 'var(--success)';
+    }
+    statusEl.innerHTML = `<span style="font-weight:600;color:${color};">${this._esc(msg)}</span>`;
+
+    toggleBtn.textContent = enabled ? 'Disable Watering' : 'Enable Watering';
+    toggleBtn.classList.toggle('btn-danger', enabled);
+    toggleBtn.classList.toggle('btn-primary', !enabled);
+    toggleBtn.classList.toggle('btn-outline', false);
+
+    this.$('clear-delay-btn').classList.toggle('hidden', !delayActive);
   }
 
   _renderActivity(events) {
@@ -587,6 +628,8 @@ class HydroBalancePanel extends HTMLElement {
       rain_forecast: 'rain forecast',
       soil_moisture: 'soil moisture',
       skip_next: 'skip requested',
+      disabled: 'system disabled',
+      rain_delay: 'rain delay / vacation',
     };
     let html = '';
     for (const ev of events.slice(0, 20)) {
@@ -963,6 +1006,23 @@ class HydroBalancePanel extends HTMLElement {
     try {
       await this._ws('hydrobalance/skip_day');
       this._toast('Next watering will be skipped');
+    } catch (e) { this._toast('Error: ' + (e.message || e)); }
+  }
+
+  async toggleEnabled() {
+    const next = !this._enabled;
+    try {
+      await this._ws('hydrobalance/set_enabled', { enabled: next });
+      this._toast(next ? 'Automatic watering enabled' : 'Automatic watering disabled');
+      await this._loadAll();
+    } catch (e) { this._toast('Error: ' + (e.message || e)); }
+  }
+
+  async setRainDelay(days) {
+    try {
+      await this._ws('hydrobalance/set_rain_delay', { days });
+      this._toast(days > 0 ? `Watering paused for ${days} day(s)` : 'Rain delay cleared');
+      await this._loadAll();
     } catch (e) { this._toast('Error: ' + (e.message || e)); }
   }
 
