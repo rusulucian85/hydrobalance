@@ -23,7 +23,7 @@ Everything is configured from a **custom sidebar panel** — no YAML required.
 3. [Sensors — what HydroBalance reads and why](#3-sensors--what-hydrobalance-reads-and-why)
 4. [Weather source & sensor discovery](#4-weather-source--sensor-discovery)
 5. [Soil types & effective rainfall](#5-soil-types--effective-rainfall)
-6. [Sun exposure — the per-zone multiplier](#6-sun-exposure--the-per-zone-multiplier)
+6. [Sun exposure & crop coefficient — the per-zone multipliers](#6-sun-exposure--crop-coefficient--the-per-zone-multipliers)
 7. [The daily cycle — putting it together](#7-the-daily-cycle--putting-it-together)
 8. [Watering: schedule, skips, duration](#8-watering-schedule-skips-duration)
 9. [Manual watering](#9-manual-watering)
@@ -222,14 +222,17 @@ Soil Override) if part of your garden differs.
 
 ---
 
-## 6. Sun exposure — the per-zone multiplier
+## 6. Sun exposure & crop coefficient — the per-zone multipliers
 
-Two beds with identical soil dry at different rates if one is shaded. HydroBalance scales
-each zone's ET by a **sun coefficient** between ~0 and 1:
+Two beds with identical soil dry at different rates if one is shaded, or if one is planted
+with thirsty vegetables and the other with drought-tolerant natives. HydroBalance scales
+each zone's ET by two independent multipliers:
 
 ```
-zone_ET = ET × sun_coefficient
+zone_ET = ET × sun_coefficient × crop_coefficient (Kc)
 ```
+
+### Sun coefficient
 
 A coefficient of `1.0` means full sun (full ET); `0.45` means a heavily shaded spot loses
 less than half as much water. There are two modes.
@@ -280,6 +283,24 @@ real path of the sun using `astral`.
 This means a low winter sun (long shadows) shades a zone more than the same obstacle does
 under a high summer sun — the coefficient is recomputed against the current date.
 
+### Crop coefficient (Kc)
+
+Where the sun coefficient captures *how much sun* a zone gets, the **crop coefficient**
+captures *how thirsty its planting is* relative to a reference lawn. It's the standard
+agronomic Kc factor, applied as a straight multiplier on the zone's ET.
+
+| Kc | Planting |
+|---|---|
+| `0.4` | Drought-tolerant / native / xeriscape |
+| `0.6` | Shrubs, mixed ornamental beds |
+| `0.8` | Cool-season turf (lower demand) |
+| `1.0` | Reference / standard lawn (default) |
+| `1.1` | Vegetable garden |
+| `1.2` | High-demand or dense crop |
+
+Set it per zone in the zone editor. The default `1.0` leaves ET unchanged, so existing
+zones behave exactly as before unless you tune it.
+
 ---
 
 ## 7. The daily cycle — putting it together
@@ -293,7 +314,7 @@ under a high summer sun — the coefficient is recomputed against the current da
 ┌─ 23:00 nightly — daily calculation ─────────────────────────┐
 │ ET            = f(Tmin, Tmax, peakUV, wind, humidity)        │
 │ for each zone:                                               │
-│   zone_ET     = ET × sun_coefficient(zone)                   │
+│   zone_ET     = ET × sun_coefficient(zone) × Kc(zone)        │
 │   eff_rain    = effective_rain(day_rain, zone_soil)          │
 │   deficit    += zone_ET − eff_rain   (clamped −20…60)        │
 └──────────────────────────────────────────────────────────────┘
@@ -308,7 +329,7 @@ under a high summer sun — the coefficient is recomputed against the current da
 Per-zone deficit update at 23:00:
 
 ```
-zone_ET     = ET × sun_coefficient
+zone_ET     = ET × sun_coefficient × crop_coefficient
 eff_rain    = effective_rain(daily_rain, zone_soil_override or system_soil)
 new_deficit = clamp(current_deficit + zone_ET − eff_rain,  −20 … +60)
 ```
@@ -325,11 +346,26 @@ as the sun comes up — which discourages fungal disease.
 
 ### Skip conditions (checked in order, any one aborts the run)
 
-1. **Skip-next flag** set (via the panel or `skip_day` service) — consumed once.
-2. **Watering already in progress.**
-3. **Frost:** forecast Tmin < `FROST_TEMP_LIMIT` (5 °C).
-4. **Rain forecast:** forecast > `RAIN_FORECAST_SKIP` (5 mm) *and* forecast-skip enabled.
-5. **Soil moisture:** measured moisture > skip threshold (default 40% VWC).
+1. **System disabled:** the master *Automatic Watering* switch is off.
+2. **Rain delay / vacation:** an active multi-day pause (see below).
+3. **Skip-next flag** set (via the panel or `skip_day` service) — consumed once.
+4. **Watering already in progress.**
+5. **Frost:** forecast Tmin < `FROST_TEMP_LIMIT` (5 °C).
+6. **Rain forecast:** forecast > `RAIN_FORECAST_SKIP` (5 mm) *and* forecast-skip enabled.
+7. **Soil moisture:** measured moisture > skip threshold (default 40% VWC).
+
+Every skip fires a `hydrobalance_event` with the reason (see §16) so you can surface it in
+the logbook or a notification. Manual and forced watering deliberately **bypass** the
+master switch and rain delay — they're explicit overrides.
+
+### System control: enable & rain delay
+
+- **Automatic Watering switch** (`switch.*_automatic_watering`) — turn it off to suspend
+  the whole schedule indefinitely. Deficits keep accruing; nothing waters automatically.
+- **Rain delay / vacation** — pause automatic watering for a set number of days. The
+  panel offers *Rain Delay 3d*, *Vacation 7d*, and *Clear Delay*; the `set_rain_delay`
+  WebSocket command takes any day count (0 clears). When the window elapses the schedule
+  resumes on its own.
 
 ### Which zones, and for how long
 
@@ -346,6 +382,20 @@ by 30 gives minutes. After the run, `deficit −= mm_to_apply` (floored at −20
 
 The `max_per_cycle` cap prevents dumping a huge deficit all at once — especially important
 on clay, where applying more than the soil can absorb just runs off.
+
+### Cycle & soak
+
+Optional per zone. Instead of one continuous run, the target is split into **pulses** of
+`pulse_minutes` separated by `soak_minutes` rests with the switch off, letting water
+absorb instead of running off — ideal for clay and slopes.
+
+```
+pulse → soak → pulse → soak → … until the full duration is delivered
+```
+
+The deficit is credited **per pulse**, so if a run is cancelled (e.g. HA restart, manual
+stop) only the undelivered remainder is forfeited — water already applied still counts.
+Off by default (a single pulse equals the old behaviour).
 
 ---
 
@@ -484,10 +534,13 @@ The custom panel is served as a `panel_custom` element (it runs inside the authe
 HA frontend, so it works in the iOS/Android app too). The JS is cache-busted by version.
 
 - **Dashboard** — today's ET / rain / effective rain / Tmin / Tmax / peak UV; an optional
-  soil-moisture card; a status card per zone (deficit bar, sun coefficient, threshold); a
-  per-zone **Manual Water** toggle with live timer; and global actions: **Skip Next
-  Watering**, **Force Water All**, **Reset All Deficits**.
-- **Zones** — add / edit / delete zones, including sun-exposure mode and soil override.
+  soil-moisture card; a status card per zone (deficit bar, sun coefficient, threshold,
+  water used, last watered) with a **Manual Water** toggle and live timer; a **Recent
+  Activity** feed of watered/skipped/cancelled events; a **System** card (enable toggle,
+  rain-delay / vacation buttons); and global actions: **Skip Next Watering**, **Force
+  Water All**, **Reset All Deficits**.
+- **Zones** — add / edit / delete zones, including sun-exposure mode, crop coefficient,
+  cycle & soak, and soil override.
 - **Settings** — weather source, sensor mapping, soil moisture, soil type & strategy.
 
 ---
@@ -501,6 +554,7 @@ HA frontend, so it works in the iOS/Android app too). The JS is cache-busted by 
 | `sensor.*_daily_et` | mm | Daily evapotranspiration |
 | `sensor.*_effective_rain` | mm | Soil-adjusted effective rainfall |
 | `sensor.*_rain_today` | mm | Raw accumulated rainfall |
+| `switch.*_automatic_watering` | — | Master enable for the automatic schedule |
 
 **Per zone:**
 
@@ -509,6 +563,8 @@ HA frontend, so it works in the iOS/Android app too). The JS is cache-busted by 
 | `sensor.<zone>_water_deficit` | mm | Current deficit (attrs: sun coefficient, status) |
 | `sensor.<zone>_status` | — | `ok` / `needs_water` / `watering` |
 | `sensor.<zone>_sun_exposure` | — | Sun coefficient (0–1) |
+| `sensor.<zone>_water_used` | mm | Cumulative water applied (total_increasing) |
+| `sensor.<zone>_last_watered` | timestamp | When the zone was last watered |
 | `binary_sensor.<zone>_needs_water` | — | Problem class; on when deficit > threshold |
 | `switch.<zone>_sprinkler` | — | The zone's sprinkler switch |
 | `number.<zone>_sprinkler_rate` | mm/30min | Sprinkler rate (0.5–10, step 0.1) |
@@ -539,6 +595,66 @@ HA frontend, so it works in the iOS/Android app too). The JS is cache-busted by 
 | `hydrobalance/manual_water` | `zone_id`, `on` | Manual on/off toggle |
 | `hydrobalance/skip_day` | — | Skip next check |
 | `hydrobalance/reset_deficit` | `zone_id?` | Reset deficit |
+| `hydrobalance/set_enabled` | `enabled` | Master enable/disable |
+| `hydrobalance/set_rain_delay` | `days` | Pause N days (0 clears) |
+
+### Events & notifications
+
+Every watering action fires a `hydrobalance_event` on the Home Assistant event bus, which
+the logbook and recorder pick up automatically. The payload:
+
+| Field | Values | Notes |
+|---|---|---|
+| `kind` | `watered` / `skipped` / `cancelled` | What happened |
+| `zone_id` / `zone_name` | zone identifier / friendly name | `null` for system-wide skips |
+| `mm` | float | Water applied (watered/cancelled) |
+| `minutes` | float | Planned run length |
+| `trigger` | `auto` / `forced` / `manual` | What initiated the run |
+| `reason` | `disabled` / `rain_delay` / `skip_next` / `frost` / `rain_forecast` / `soil_moisture` | Why a run was skipped |
+| `time` | ISO timestamp | When the event fired |
+
+Wire these into a notification with a simple automation. **Notify when a zone is
+watered:**
+
+```yaml
+automation:
+  - alias: HydroBalance watered notification
+    trigger:
+      - platform: event
+        event_type: hydrobalance_event
+        event_data:
+          kind: watered
+    action:
+      - service: notify.mobile_app_your_phone
+        data:
+          title: "HydroBalance"
+          message: >
+            Watered {{ trigger.event.data.zone_name }} —
+            {{ trigger.event.data.mm }} mm ({{ trigger.event.data.trigger }})
+```
+
+**Notify when watering is skipped because of rain or frost:**
+
+```yaml
+automation:
+  - alias: HydroBalance skip notification
+    trigger:
+      - platform: event
+        event_type: hydrobalance_event
+        event_data:
+          kind: skipped
+    condition:
+      - "{{ trigger.event.data.reason in ['rain_forecast', 'frost'] }}"
+    action:
+      - service: notify.mobile_app_your_phone
+        data:
+          title: "HydroBalance"
+          message: "Watering skipped: {{ trigger.event.data.reason }}"
+```
+
+You can equally trigger on `kind: cancelled`, branch on `trigger`/`reason`, or feed the
+`sensor.<zone>_last_watered` and `sensor.<zone>_water_used` entities into dashboards and
+history graphs.
 
 ---
 
@@ -560,6 +676,9 @@ All in `custom_components/hydrobalance/const.py`.
 | `DEFAULT_DEFICIT_THRESHOLD` | 12 | mm |
 | `DEFAULT_MAX_PER_CYCLE` | 5 | mm |
 | `DEFAULT_MOISTURE_SKIP_THRESHOLD` | 40 | % VWC |
+| `DEFAULT_CROP_COEFFICIENT` | 1.0 | Kc multiplier on zone ET |
+| `DEFAULT_PULSE_MINUTES` | 10 | Cycle & soak: max run before soaking |
+| `DEFAULT_SOAK_MINUTES` | 20 | Cycle & soak: rest between pulses |
 | `SOIL_TYPES` | clay / loam / sandy | Per-band rain absorption coefficients |
 | `STRATEGIES` | balanced / water_saving / lush_green / clay_safe | Threshold + max-per-cycle presets |
 | `SUN_EXPOSURE_MANUAL` | 1.0 / 0.7 / 0.45 | Full / partial / heavy shade |
@@ -590,6 +709,14 @@ All in `custom_components/hydrobalance/const.py`.
 
 ## 19. Changelog
 
+- **0.8.0** — Per-zone **cycle & soak** pulse watering with per-pulse deficit crediting
+  (cancellation-safe).
+- **0.7.0** — Master **Automatic Watering** enable switch and **rain delay / vacation**
+  multi-day pause.
+- **0.6.0** — Per-zone **crop coefficient (Kc)**: `zone_ET = ET × sun × Kc`.
+- **0.5.0** — Watering **history & per-zone usage**: `hydrobalance_event` bus events
+  (watered/skipped/cancelled), `water_used` and `last_watered` sensors, Recent Activity
+  panel card.
 - **0.4.0** — Per-zone manual watering toggle with live timer; elapsed run time is
   credited to the deficit (clamped at 0) and survives restarts. Full technical README.
 - **0.3.x** — Weather source & sensor mapping moved into the panel; sunrise−1h watering
