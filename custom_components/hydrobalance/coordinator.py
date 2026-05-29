@@ -707,7 +707,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._finalize_manual(zone_id)
 
         await self._persist()
-        await self.async_request_refresh()
+        # async_refresh (not request_refresh) so the panel's follow-up status
+        # poll sees the new state instead of the still-debounced previous dict.
+        await self.async_refresh()
 
     async def _finalize_manual(self, zone_id: str) -> None:
         """Stop a manual run, applying the watered mm to the zone deficit."""
@@ -749,14 +751,14 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Skip the next watering check."""
         self._skip_next = True
         await self._persist()
-        await self.async_request_refresh()
+        await self.async_refresh()
 
     async def async_set_enabled(self, enabled: bool) -> None:
         """Enable or disable automatic watering system-wide."""
         self._enabled = enabled
         LOGGER.info("HydroBalance %s", "enabled" if enabled else "disabled")
         await self._persist()
-        await self.async_request_refresh()
+        await self.async_refresh()
 
     async def async_set_rain_delay(self, days: float) -> None:
         """Pause automatic watering for the next `days` days (vacation/rain).
@@ -771,7 +773,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._rain_delay_until = None
             LOGGER.info("Rain delay cleared")
         await self._persist()
-        await self.async_request_refresh()
+        await self.async_refresh()
 
     async def async_reset_deficit(self, zone_id: str | None = None) -> None:
         """Reset water deficit to 0 for a zone or all zones."""
@@ -781,7 +783,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for zid in self._zone_deficits:
                 self._zone_deficits[zid] = 0.0
         await self._persist()
-        await self.async_request_refresh()
+        await self.async_refresh()
 
     # ─── Helpers ──────────────────────────────────────────────────────────────
 

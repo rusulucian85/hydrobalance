@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.9.0 &mdash; Smart Irrigation</div>
+        <div class="version">v0.9.1 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
