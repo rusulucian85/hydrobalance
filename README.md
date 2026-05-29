@@ -354,9 +354,10 @@ as the sun comes up — which discourages fungal disease.
 6. **Rain forecast:** forecast > `RAIN_FORECAST_SKIP` (5 mm) *and* forecast-skip enabled.
 7. **Soil moisture:** measured moisture > skip threshold (default 40% VWC).
 
-Every skip fires a `hydrobalance_event` with the reason (see §16) so you can surface it in
-the logbook or a notification. Manual and forced watering deliberately **bypass** the
-master switch and rain delay — they're explicit overrides.
+Each weather/system skip (everything except the re-entrancy guard #4) fires a
+`hydrobalance_event` with its reason (see §16) so you can surface it in the logbook or a
+notification. Manual and forced watering deliberately **bypass** the master switch and
+rain delay — they're explicit overrides.
 
 ### System control: enable & rain delay
 
