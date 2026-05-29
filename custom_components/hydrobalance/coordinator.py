@@ -107,6 +107,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_calc_date: str | None = None
         self._zone_water_used: dict[str, float] = {}  # cumulative mm per zone
         self._zone_last_watered: dict[str, str] = {}  # zone_id -> ISO timestamp
+        # Last daily ET / effective-rain result, surfaced on the dashboard.
+        self._last_et: float | None = None
+        self._last_effective_rain: float | None = None
 
         # In-memory ring of recent events for the panel (not persisted; HA's
         # logbook/recorder holds the durable record via fired bus events).
@@ -178,6 +181,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._zone_water_used = stored.get("zone_water_used", {})
             self._zone_last_watered = stored.get("zone_last_watered", {})
             self._last_calc_date = stored.get("last_calc_date")
+            self._last_et = stored.get("last_et")
+            self._last_effective_rain = stored.get("last_effective_rain")
             self._daily_tmin = stored.get("daily_tmin", 99.0)
             self._daily_tmax = stored.get("daily_tmax", -99.0)
             self._daily_peak_uv = stored.get("daily_peak_uv", 0.0)
@@ -302,8 +307,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "tmax": self._daily_tmax if self._daily_tmax > -99 else None,
                 "peak_uv": self._daily_peak_uv,
                 "rain_accumulated": round(self._daily_rain, 1),
-                "et": None,  # Set after daily calculation
-                "effective_rain": None,
+                "et": self._last_et,
+                "effective_rain": self._last_effective_rain,
                 "last_calc_date": self._last_calc_date,
             },
             "zones": {
@@ -423,6 +428,10 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Calculate effective rain (system-level, then adjusted per zone)
         system_soil = self.soil_type
         eff_rain_system = self.calculate_effective_rain(rain, system_soil)
+
+        # Persist for the dashboard — without this the panel sees None forever.
+        self._last_et = round(et, 2)
+        self._last_effective_rain = round(eff_rain_system, 2)
 
         LOGGER.info(
             "Daily ET=%.2fmm, Rain=%.1fmm, EffRain=%.2fmm (Tmin=%.1f Tmax=%.1f UV=%.1f Wind=%.1f Hum=%.0f)",
@@ -879,6 +888,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "zone_water_used": self._zone_water_used,
             "zone_last_watered": self._zone_last_watered,
             "last_calc_date": self._last_calc_date,
+            "last_et": self._last_et,
+            "last_effective_rain": self._last_effective_rain,
             "daily_tmin": self._daily_tmin,
             "daily_tmax": self._daily_tmax,
             "daily_peak_uv": self._daily_peak_uv,
