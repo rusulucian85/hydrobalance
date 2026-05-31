@@ -42,6 +42,7 @@ def ws_get_config(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
             "soil_type": coordinator._store_data.get("soil_type", "clay"),
             "strategy": coordinator._store_data.get("strategy", "balanced"),
             "sensors": coordinator._store_data.get("sensors", {}),
+            "sensors_fallback": coordinator._store_data.get("sensors_fallback", {}),
             "moisture_skip_threshold": coordinator.moisture_skip_threshold,
             "weather_entity": coordinator.weather_entity,
             "use_forecast": coordinator.use_forecast,
@@ -57,6 +58,7 @@ def ws_get_config(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
     vol.Optional("soil_type"): str,
     vol.Optional("strategy"): str,
     vol.Optional("sensors"): dict,
+    vol.Optional("sensors_fallback"): dict,
     vol.Optional("moisture_skip_threshold"): vol.Coerce(float),
     vol.Optional("weather_entity"): vol.Any(str, None),
     vol.Optional("use_forecast"): bool,
@@ -83,6 +85,8 @@ async def ws_save_config(hass: HomeAssistant, connection: websocket_api.ActiveCo
         coordinator._store_data["strategy"] = msg["strategy"]
     if "sensors" in msg:
         coordinator._store_data["sensors"] = msg["sensors"]
+    if "sensors_fallback" in msg:
+        coordinator._store_data["sensors_fallback"] = msg["sensors_fallback"]
     if "moisture_skip_threshold" in msg:
         coordinator._store_data["moisture_skip_threshold"] = msg["moisture_skip_threshold"]
     if "weather_entity" in msg:

@@ -753,6 +753,7 @@ class HydroBalancePanel extends HTMLElement {
     this.$('strategy').value = (entry && entry.strategy) || 'balanced';
 
     const sensors = (entry && entry.sensors) || {};
+    const sensorsFallback = (entry && entry.sensors_fallback) || {};
     const sensorKeys = [
       ['sensor_temperature', 'Temperature'],
       ['sensor_temperature_min', 'Forecast Min (frost check)'],
@@ -762,13 +763,15 @@ class HydroBalancePanel extends HTMLElement {
       ['sensor_rain', 'Rain'],
       ['sensor_rain_forecast', 'Rain Forecast'],
     ];
-    let html = '';
+    let html = `<p style="margin:0 0 8px;opacity:0.7;font-size:0.85em">Primary = your real local sensor. Fallback is used only when the primary is unavailable (e.g. a weather-forecast entity).</p>`;
     for (const [key, label] of sensorKeys) {
       const val = sensors[key] || '';
+      const fb = sensorsFallback[key] || '';
       html += `
         <div class="form-group">
           <label>${label}</label>
-          <input type="text" id="ws-${key}" list="dl-sensors" value="${this._esc(val)}" placeholder="Not configured" autocapitalize="off" autocomplete="off">
+          <input type="text" id="ws-${key}" list="dl-sensors" value="${this._esc(val)}" placeholder="Primary (real sensor)" autocapitalize="off" autocomplete="off">
+          <input type="text" id="wsfb-${key}" list="dl-sensors" value="${this._esc(fb)}" placeholder="Fallback (optional)" autocapitalize="off" autocomplete="off" style="margin-top:4px">
         </div>`;
     }
     this.$('sensor-list').innerHTML = html;
@@ -977,6 +980,7 @@ class HydroBalancePanel extends HTMLElement {
   async saveWeatherSensors() {
     const entry = this._config[this._currentEntryId];
     const sensors = { ...((entry && entry.sensors) || {}) };
+    const sensorsFallback = { ...((entry && entry.sensors_fallback) || {}) };
     const keys = [
       'sensor_temperature', 'sensor_temperature_min',
       'sensor_humidity', 'sensor_wind_speed', 'sensor_uv_index',
@@ -985,10 +989,12 @@ class HydroBalancePanel extends HTMLElement {
     for (const k of keys) {
       const v = this.$('ws-' + k).value.trim();
       if (v) sensors[k] = v; else delete sensors[k];
+      const fb = this.$('wsfb-' + k).value.trim();
+      if (fb) sensorsFallback[k] = fb; else delete sensorsFallback[k];
     }
     delete sensors.sensor_temperature_max;  // retired field
     try {
-      await this._ws('hydrobalance/config/save', { entry_id: this._currentEntryId, sensors });
+      await this._ws('hydrobalance/config/save', { entry_id: this._currentEntryId, sensors, sensors_fallback: sensorsFallback });
       this._toast('Sensors saved!');
       await this._loadAll();
     } catch (e) {

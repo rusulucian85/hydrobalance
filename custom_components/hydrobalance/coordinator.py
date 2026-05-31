@@ -123,6 +123,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "soil_type": "clay",
             "strategy": "balanced",
             "sensors": {},
+            "sensors_fallback": {},
             CONF_MOISTURE_SKIP_THRESHOLD: DEFAULT_MOISTURE_SKIP_THRESHOLD,
             CONF_WEATHER_ENTITY: None,
             CONF_USE_FORECAST: True,
@@ -200,6 +201,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._store_data["soil_type"] = stored.get("soil_type", "clay")
             self._store_data["strategy"] = stored.get("strategy", "balanced")
             self._store_data["sensors"] = stored.get("sensors", {})
+            self._store_data["sensors_fallback"] = stored.get("sensors_fallback", {})
             self._store_data[CONF_MOISTURE_SKIP_THRESHOLD] = stored.get(
                 CONF_MOISTURE_SKIP_THRESHOLD, DEFAULT_MOISTURE_SKIP_THRESHOLD
             )
@@ -349,10 +351,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     # ─── Sensor Reading ───────────────────────────────────────────────────────
 
-    def _read_sensor(self, config_key: str) -> float | None:
-        """Read a sensor value from HA state."""
-        # Check panel sensors first, then config entry
-        entity_id = self._store_data.get("sensors", {}).get(config_key) or self.config.get(config_key)
+    def _read_entity(self, entity_id: str | None) -> float | None:
+        """Read a single HA state as a float, or None if missing/unavailable."""
         if not entity_id:
             return None
         state = self.hass.states.get(entity_id)
@@ -362,6 +362,28 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return float(state.state)
         except (ValueError, TypeError):
             return None
+
+    def _read_sensor(self, config_key: str) -> float | None:
+        """Read a sensor value, preferring the real local sensor over the fallback.
+
+        Resolution order: primary (panel sensors → config entry) → fallback
+        (e.g. a weather-forecast entity). The primary is meant to be a real
+        local sensor that reflects reality; the fallback covers it going
+        unavailable so the term isn't silently dropped from the calculation.
+        """
+        primary = self._store_data.get("sensors", {}).get(config_key) or self.config.get(config_key)
+        value = self._read_entity(primary)
+        if value is not None:
+            return value
+
+        fallback = self._store_data.get("sensors_fallback", {}).get(config_key)
+        value = self._read_entity(fallback)
+        if value is not None and primary:
+            LOGGER.debug(
+                "Sensor %s primary (%s) unavailable, using fallback %s",
+                config_key, primary, fallback,
+            )
+        return value
 
     # ─── ET Calculation ───────────────────────────────────────────────────────
 
@@ -903,6 +925,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "soil_type": self._store_data.get("soil_type", "clay"),
             "strategy": self._store_data.get("strategy", "balanced"),
             "sensors": self._store_data.get("sensors", {}),
+            "sensors_fallback": self._store_data.get("sensors_fallback", {}),
             CONF_MOISTURE_SKIP_THRESHOLD: self.moisture_skip_threshold,
             CONF_WEATHER_ENTITY: self._store_data.get(CONF_WEATHER_ENTITY),
             CONF_USE_FORECAST: self._store_data.get(CONF_USE_FORECAST, True),
