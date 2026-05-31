@@ -22,6 +22,7 @@ from .const import (
     STORAGE_KEY_PREFIX,
     DEFICIT_MIN,
     DEFICIT_MAX,
+    SOIL_TYPES,
     FROST_TEMP_LIMIT,
     RAIN_FORECAST_SKIP,
     STRATEGIES,
@@ -385,6 +386,12 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         return value
 
+    def _zone_field_capacity(self, zone: dict[str, Any]) -> float:
+        """Max plant-available water (mm) for this zone's soil — caps the deficit."""
+        zone_soil = zone.get(CONF_ZONE_SOIL_OVERRIDE) or self.soil_type
+        soil = SOIL_TYPES.get(zone_soil) or SOIL_TYPES.get("clay", {})
+        return float(soil.get("field_capacity", DEFICIT_MAX))
+
     # ─── ET Calculation ───────────────────────────────────────────────────────
 
     calculate_et = staticmethod(calc.calculate_et)
@@ -473,10 +480,12 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             kc = zone.get(CONF_ZONE_CROP_COEFFICIENT, DEFAULT_CROP_COEFFICIENT)
             zone_et = et * sun_coeff * kc
 
-            # Update deficit
+            # Update deficit — cap at the soil's field capacity so a long skip
+            # can't accumulate more debt than the soil could physically lose.
             current = self._zone_deficits.get(zid, 0.0)
             new_deficit = current + zone_et - eff_rain
-            new_deficit = max(DEFICIT_MIN, min(DEFICIT_MAX, new_deficit))
+            cap = self._zone_field_capacity(zone)
+            new_deficit = max(DEFICIT_MIN, min(cap, new_deficit))
             self._zone_deficits[zid] = round(new_deficit, 1)
 
             LOGGER.info(

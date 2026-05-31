@@ -40,18 +40,24 @@ DEFICIT_MAX = 60.0
 # ─── Soil Types ───────────────────────────────────────────────────────────────
 # Effective precipitation coefficients per rain band: (0-2mm, 2-5mm, 5-15mm, >15mm)
 
+# "field_capacity" (mm) is the most plant-available water the soil can hold —
+# it caps how large a deficit can grow, so a long skip/rain-delay can't invent
+# debt the soil could never have lost.
 SOIL_TYPES = {
     "clay": {
         "name": "Clay / Heavy Soil",
         "coefficients": (0.00, 0.60, 0.70, 0.55),
+        "field_capacity": 30.0,
     },
     "loam": {
         "name": "Loam",
         "coefficients": (0.15, 0.65, 0.75, 0.60),
+        "field_capacity": 20.0,
     },
     "sandy": {
         "name": "Sandy",
         "coefficients": (0.30, 0.75, 0.85, 0.65),
+        "field_capacity": 12.0,
     },
 }
 
