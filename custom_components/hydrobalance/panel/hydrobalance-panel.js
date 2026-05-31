@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.9.2 &mdash; Smart Irrigation</div>
+        <div class="version">v0.10.0 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -258,6 +258,10 @@ const TEMPLATE = `
           Optional. When set, watering is skipped if measured soil moisture is above the threshold &mdash;
           real-sensor feedback overrides the ET estimate.
         </p>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="use-soil-moisture" style="width:auto;">
+          <label for="use-soil-moisture" style="margin:0;">Use soil-moisture sensor (off = pure ET model)</label>
+        </div>
         <div class="form-group">
           <label>Sensor Entity</label>
           <input type="text" id="soil-moisture-sensor" list="dl-sensors" placeholder="sensor.garden_sensor_soil_moisture" autocapitalize="off" autocomplete="off">
@@ -530,6 +534,12 @@ class HydroBalancePanel extends HTMLElement {
       moistureCard.classList.add('hidden');
     }
 
+    const cfg = this._config[this._currentEntryId] || {};
+    const moistureThreshold = soil.skip_threshold ?? 40;
+    const wetSoil = (cfg.use_soil_moisture !== false)
+      && soil.moisture != null
+      && soil.moisture > moistureThreshold;
+
     const zones = s.zones || {};
     const container = this.$('zone-status-list');
     if (Object.keys(zones).length === 0) {
@@ -568,7 +578,10 @@ class HydroBalancePanel extends HTMLElement {
         <div class="zone-card">
           <div class="zone-header">
             <span class="zone-name">${this._esc(zoneName)}</span>
-            <span class="badge ${badgeClass}">${badgeText}</span>
+            <span>
+              ${wetSoil ? '<span class="badge badge-ok" title="Soil moisture above threshold — ET frozen, only rain adjusts the deficit">Soil wet</span> ' : ''}
+              <span class="badge ${badgeClass}">${badgeText}</span>
+            </span>
           </div>
           <div class="zone-stats">
             <span>Deficit: <strong>${deficit} mm</strong></span>
@@ -776,6 +789,7 @@ class HydroBalancePanel extends HTMLElement {
     }
     this.$('sensor-list').innerHTML = html;
 
+    this.$('use-soil-moisture').checked = !(entry && entry.use_soil_moisture === false);
     this.$('soil-moisture-sensor').value = sensors.sensor_soil_moisture || '';
     this.$('moisture-threshold').value = (entry && entry.moisture_skip_threshold != null) ? entry.moisture_skip_threshold : 40;
     this._populatePicker('dl-sensors', 'sensor');
@@ -954,6 +968,7 @@ class HydroBalancePanel extends HTMLElement {
         entry_id: this._currentEntryId,
         sensors: sensors,
         moisture_skip_threshold: isNaN(threshold) ? 40 : threshold,
+        use_soil_moisture: this.$('use-soil-moisture').checked,
       });
       this._toast('Soil moisture settings saved!');
       await this._loadAll();
