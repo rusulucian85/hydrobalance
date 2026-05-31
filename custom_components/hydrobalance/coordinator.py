@@ -30,6 +30,8 @@ from .const import (
     CONF_STRATEGY,
     CONF_ZONES,
     CONF_USE_FORECAST,
+    CONF_USE_SOIL_MOISTURE,
+    DEFAULT_USE_SOIL_MOISTURE,
     CONF_WEATHER_ENTITY,
     CONF_SENSOR_TEMPERATURE,
     CONF_SENSOR_TEMPERATURE_MIN,
@@ -126,6 +128,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "sensors": {},
             "sensors_fallback": {},
             CONF_MOISTURE_SKIP_THRESHOLD: DEFAULT_MOISTURE_SKIP_THRESHOLD,
+            CONF_USE_SOIL_MOISTURE: DEFAULT_USE_SOIL_MOISTURE,
             CONF_WEATHER_ENTITY: None,
             CONF_USE_FORECAST: True,
         }
@@ -173,6 +176,14 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return bool(self.config.get(CONF_USE_FORECAST, True))
         return bool(val)
 
+    @property
+    def use_soil_moisture(self) -> bool:
+        """Whether the soil-moisture sensor steers watering (vs. ET-only)."""
+        val = self._store_data.get(CONF_USE_SOIL_MOISTURE)
+        if val is None:
+            return DEFAULT_USE_SOIL_MOISTURE
+        return bool(val)
+
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
     async def async_setup(self) -> None:
@@ -205,6 +216,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._store_data["sensors_fallback"] = stored.get("sensors_fallback", {})
             self._store_data[CONF_MOISTURE_SKIP_THRESHOLD] = stored.get(
                 CONF_MOISTURE_SKIP_THRESHOLD, DEFAULT_MOISTURE_SKIP_THRESHOLD
+            )
+            self._store_data[CONF_USE_SOIL_MOISTURE] = stored.get(
+                CONF_USE_SOIL_MOISTURE, DEFAULT_USE_SOIL_MOISTURE
             )
             # Migrate weather_entity/use_forecast from config entry on first load
             self._store_data[CONF_WEATHER_ENTITY] = stored.get(
@@ -467,6 +481,23 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             et, rain, eff_rain_system, tmin, tmax, uv, wind, humidity,
         )
 
+        # When the soil-moisture sensor says the ground is still wet, don't pile
+        # on ET debt — the measurement overrides the estimate. Only rain is
+        # applied (it can still pay down an existing deficit). This is the
+        # "trust the sensor over the model" half of the flip switch; it falls
+        # back to ET-only automatically when the sensor is unavailable.
+        moisture = self._read_sensor(CONF_SENSOR_SOIL_MOISTURE)
+        freeze_et = (
+            self.use_soil_moisture
+            and moisture is not None
+            and moisture > self.moisture_skip_threshold
+        )
+        if freeze_et:
+            LOGGER.info(
+                "Soil moisture %.0f%% > %.0f%% — freezing ET, only rain applied today",
+                moisture, self.moisture_skip_threshold,
+            )
+
         # Update each zone's deficit
         for zone in self.zones:
             zid = zone[CONF_ZONE_ID]
@@ -478,7 +509,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             # Zone ET adjusted by sun exposure and crop coefficient
             kc = zone.get(CONF_ZONE_CROP_COEFFICIENT, DEFAULT_CROP_COEFFICIENT)
-            zone_et = et * sun_coeff * kc
+            zone_et = 0.0 if freeze_et else et * sun_coeff * kc
 
             # Update deficit — cap at the soil's field capacity so a long skip
             # can't accumulate more debt than the soil could physically lose.
@@ -544,15 +575,18 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._log_event("skipped", reason="rain_forecast")
                 return
 
-        # Soil-moisture skip (real sensor feedback overrides ET estimate)
-        moisture = self._read_sensor(CONF_SENSOR_SOIL_MOISTURE)
-        if moisture is not None and moisture > self.moisture_skip_threshold:
-            LOGGER.info(
-                "Soil moisture %.1f%% > %.1f%%, skipping watering",
-                moisture, self.moisture_skip_threshold,
-            )
-            self._log_event("skipped", reason="soil_moisture")
-            return
+        # Soil-moisture skip (real sensor feedback overrides ET estimate).
+        # Only consulted when the soil-moisture mode is enabled; otherwise the
+        # system runs purely on the ET deficit model.
+        if self.use_soil_moisture:
+            moisture = self._read_sensor(CONF_SENSOR_SOIL_MOISTURE)
+            if moisture is not None and moisture > self.moisture_skip_threshold:
+                LOGGER.info(
+                    "Soil moisture %.1f%% > %.1f%%, skipping watering",
+                    moisture, self.moisture_skip_threshold,
+                )
+                self._log_event("skipped", reason="soil_moisture")
+                return
 
         # Build watering queue
         queue = []
@@ -936,6 +970,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "sensors": self._store_data.get("sensors", {}),
             "sensors_fallback": self._store_data.get("sensors_fallback", {}),
             CONF_MOISTURE_SKIP_THRESHOLD: self.moisture_skip_threshold,
+            CONF_USE_SOIL_MOISTURE: self.use_soil_moisture,
             CONF_WEATHER_ENTITY: self._store_data.get(CONF_WEATHER_ENTITY),
             CONF_USE_FORECAST: self._store_data.get(CONF_USE_FORECAST, True),
         })

@@ -29,6 +29,7 @@ DEFAULT_SPRINKLER_RATE = 2.0  # mm per 30 min
 DEFAULT_DEFICIT_THRESHOLD = 12.0  # mm
 DEFAULT_MAX_PER_CYCLE = 5.0  # mm
 DEFAULT_MOISTURE_SKIP_THRESHOLD = 40.0  # % VWC
+DEFAULT_USE_SOIL_MOISTURE = True
 DEFAULT_CROP_COEFFICIENT = 1.0  # Kc multiplier on zone ET
 DEFAULT_PULSE_MINUTES = 10.0  # cycle & soak: max run before soaking
 DEFAULT_SOAK_MINUTES = 20.0  # cycle & soak: rest between pulses
@@ -130,6 +131,7 @@ CONF_SENSOR_SOIL_MOISTURE = "sensor_soil_moisture"
 CONF_SOIL_TYPE = "soil_type"
 CONF_STRATEGY = "strategy"
 CONF_USE_FORECAST = "use_forecast"
+CONF_USE_SOIL_MOISTURE = "use_soil_moisture"
 CONF_MOISTURE_SKIP_THRESHOLD = "moisture_skip_threshold"
 CONF_ZONES = "zones"
 
