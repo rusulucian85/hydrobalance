@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.10.0 &mdash; Smart Irrigation</div>
+        <div class="version">v0.10.1 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -450,6 +450,14 @@ class HydroBalancePanel extends HTMLElement {
     return d.innerHTML;
   }
 
+  _fmtMinutes(min) {
+    if (min == null || isNaN(min)) return '—';
+    if (min < 60) return `${Math.round(min)} min`;
+    const h = Math.floor(min / 60);
+    const m = Math.round(min - h * 60);
+    return `${h}h${String(m).padStart(2, '0')}`;
+  }
+
   _toast(msg) {
     const el = document.createElement('div');
     el.className = 'toast';
@@ -561,6 +569,27 @@ class HydroBalancePanel extends HTMLElement {
         ? this._relTime(zdata.last_watered)
         : 'never';
 
+      // Projected run time at the current deficit (matches coordinator's
+      // mm_to_apply = min(deficit, max_per_cycle); minutes = mm/rate × 30, min 1).
+      const cfg = zdata.config || {};
+      const rate = Number(cfg.sprinkler_rate) || 2.0;
+      const maxPer = Number(cfg.max_per_cycle) || 5;
+      const pulseMin = Number(cfg.pulse_minutes) || 0;
+      const soakMin = Number(cfg.soak_minutes) || 0;
+      const mmToApply = deficit > 0 ? Math.min(deficit, maxPer) : 0;
+      let runFmt = '—';
+      let runTitle = 'No water needed';
+      if (mmToApply > 0) {
+        const runMin = Math.max(1, (mmToApply / rate) * 30);
+        runFmt = this._fmtMinutes(runMin);
+        runTitle = `${mmToApply.toFixed(1)} mm @ ${rate} mm/30min`;
+        if (pulseMin > 0 && soakMin > 0 && runMin > pulseMin) {
+          const pulses = Math.ceil(runMin / pulseMin);
+          const wallMin = runMin + (pulses - 1) * soakMin;
+          runTitle += ` — ${pulses}× cycle&soak ≈ ${this._fmtMinutes(wallMin)} wall-clock`;
+        }
+      }
+
       let badgeClass = 'badge-ok', badgeText = 'OK';
       if (manualActive) { badgeClass = 'badge-active'; badgeText = 'Manual'; }
       else if (zoneStatus === 'watering') { badgeClass = 'badge-active'; badgeText = 'Watering'; }
@@ -587,6 +616,7 @@ class HydroBalancePanel extends HTMLElement {
             <span>Deficit: <strong>${deficit} mm</strong></span>
             <span>Sun: <strong>${sunCoeff}</strong></span>
             <span>Threshold: ${threshold} mm</span>
+            <span title="${this._esc(runTitle)}">Run: <strong>${runFmt}</strong></span>
             <span>Used: <strong>${waterUsed} mm</strong></span>
             <span>Last: ${this._esc(lastWatered)}</span>
           </div>
