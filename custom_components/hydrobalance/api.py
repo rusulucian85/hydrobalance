@@ -207,12 +207,14 @@ async def ws_force_water(hass: HomeAssistant, connection: websocket_api.ActiveCo
     vol.Required("type"): "hydrobalance/manual_water",
     vol.Required("zone_id"): str,
     vol.Required("on"): bool,
+    vol.Optional("duration_minutes"): vol.Coerce(float),
 })
 @websocket_api.async_response
 async def ws_manual_water(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """Manually toggle watering for a zone."""
+    """Manually toggle watering for a zone, with an optional auto-stop timer."""
+    duration = msg.get("duration_minutes")
     for coordinator in hass.data.get(DOMAIN, {}).values():
-        await coordinator.async_manual_toggle(msg["zone_id"], msg["on"])
+        await coordinator.async_manual_toggle(msg["zone_id"], msg["on"], duration)
         break
     connection.send_result(msg["id"], {"success": True})
 

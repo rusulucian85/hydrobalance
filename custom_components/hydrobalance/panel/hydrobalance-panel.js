@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.10.1 &mdash; Smart Irrigation</div>
+        <div class="version">v0.11.0 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -411,6 +411,25 @@ const TEMPLATE = `
         </div>
       </div>
     </div>
+
+    <div id="manual-modal" class="modal-overlay hidden" onclick="window.__hb._manualBackdrop(event)">
+      <div class="modal" style="max-width:420px;">
+        <h2 id="manual-modal-title">Manual water</h2>
+        <p id="manual-modal-info" style="margin:0 0 12px;font-size:0.85em;color:var(--text-secondary);"></p>
+        <input type="hidden" id="manual-modal-zone">
+        <label style="font-size:0.85em;color:var(--text-secondary);">Quick pick</label>
+        <div id="manual-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 16px;"></div>
+        <div class="form-group">
+          <label>Custom duration (min)</label>
+          <input type="number" id="manual-custom-min" min="1" step="1" placeholder="e.g. 12">
+        </div>
+        <div class="actions" style="flex-wrap:wrap;gap:8px;">
+          <button class="btn btn-outline" onclick="window.__hb.closeManualModal()">Cancel</button>
+          <button class="btn btn-outline" onclick="window.__hb.startManualOpen()">Until I stop</button>
+          <button class="btn btn-primary" onclick="window.__hb.startManualCustom()">Start</button>
+        </div>
+      </div>
+    </div>
   </div>
 `;
 
@@ -599,8 +618,9 @@ class HydroBalancePanel extends HTMLElement {
       const pct = Math.min(100, Math.max(0, (deficit / threshold) * 100));
       const barColor = pct > 80 ? 'var(--danger)' : pct > 50 ? 'var(--warning)' : 'var(--success)';
 
+      const manualEnds = zdata.manual_ends || '';
       const cron = manualActive
-        ? `<span class="hb-cron" data-start="${this._esc(manualStarted)}" style="font-variant-numeric:tabular-nums;color:var(--danger);font-weight:600;">00:00</span>`
+        ? `<span class="hb-cron" data-start="${this._esc(manualStarted)}" data-end="${this._esc(manualEnds)}" style="font-variant-numeric:tabular-nums;color:var(--danger);font-weight:600;">00:00</span>${manualEnds ? '<span style="font-size:0.75em;color:var(--text-secondary);margin-left:6px;">left</span>' : ''}`
         : '';
 
       html += `
@@ -625,7 +645,7 @@ class HydroBalancePanel extends HTMLElement {
           </div>
           <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
             <button class="btn btn-sm ${manualActive ? 'btn-danger' : 'btn-outline'}"
-              onclick="window.__hb.manualWater('${this._esc(zid)}', ${manualActive ? 'false' : 'true'})">
+              onclick="window.__hb.${manualActive ? `manualWater('${this._esc(zid)}', false)` : `openManualModal('${this._esc(zid)}')`}">
               ${manualActive ? 'Stop Manual' : 'Manual Water'}
             </button>
             ${cron}
@@ -732,9 +752,15 @@ class HydroBalancePanel extends HTMLElement {
     }
     const now = Date.now();
     spans.forEach(sp => {
-      const start = Date.parse(sp.dataset.start);
-      if (isNaN(start)) return;
-      const sec = Math.max(0, Math.floor((now - start) / 1000));
+      const end = sp.dataset.end ? Date.parse(sp.dataset.end) : NaN;
+      let sec;
+      if (!isNaN(end)) {
+        sec = Math.max(0, Math.floor((end - now) / 1000));
+      } else {
+        const start = Date.parse(sp.dataset.start);
+        if (isNaN(start)) return;
+        sec = Math.max(0, Math.floor((now - start) / 1000));
+      }
       const m = String(Math.floor(sec / 60)).padStart(2, '0');
       const s = String(sec % 60).padStart(2, '0');
       sp.textContent = `${m}:${s}`;
@@ -1075,12 +1101,76 @@ class HydroBalancePanel extends HTMLElement {
     } catch (e) { this._toast('Error: ' + (e.message || e)); }
   }
 
-  async manualWater(zoneId, on) {
+  async manualWater(zoneId, on, durationMinutes) {
     try {
-      await this._ws('hydrobalance/manual_water', { zone_id: zoneId, on });
-      this._toast(on ? 'Manual watering started' : 'Manual watering stopped');
+      const payload = { zone_id: zoneId, on };
+      if (on && durationMinutes && durationMinutes > 0) {
+        payload.duration_minutes = durationMinutes;
+      }
+      await this._ws('hydrobalance/manual_water', payload);
+      this._toast(
+        on
+          ? (durationMinutes ? `Manual watering — ${durationMinutes} min` : 'Manual watering started')
+          : 'Manual watering stopped'
+      );
       await this._loadAll();
     } catch (e) { this._toast('Error: ' + (e.message || e)); }
+  }
+
+  // ─── Manual-watering timer modal ─────────────────────────────────────────
+  openManualModal(zoneId) {
+    const entry = this._config[this._currentEntryId];
+    const zones = (entry && entry.zones) || [];
+    const zone = zones.find(z => z.id === zoneId) || {};
+    const rate = Number(zone.sprinkler_rate) || 2.0;
+    const name = zone.name || zoneId;
+
+    this.$('manual-modal-zone').value = zoneId;
+    this.$('manual-modal-title').textContent = `Manual water — ${name}`;
+    this.$('manual-modal-info').textContent =
+      `Sprinkler rate: ${rate} mm/30min. The run auto-stops at the end of the timer.`;
+    this.$('manual-custom-min').value = '';
+
+    const presets = [5, 10, 15, 30, 45, 60];
+    const chips = this.$('manual-chips');
+    chips.innerHTML = presets.map(min => {
+      const mm = ((min / 30) * rate).toFixed(1);
+      return `<button class="btn btn-sm btn-outline"
+        style="flex:1 1 30%;min-width:90px;"
+        onclick="window.__hb.startManualPreset(${min})">
+        ${min} min<br><span style="font-size:0.75em;opacity:0.7;">≈ ${mm} mm</span>
+      </button>`;
+    }).join('');
+
+    this.$('manual-modal').classList.remove('hidden');
+  }
+
+  closeManualModal() { this.$('manual-modal').classList.add('hidden'); }
+  _manualBackdrop(event) {
+    if (event.target === this.$('manual-modal')) this.closeManualModal();
+  }
+
+  async startManualPreset(minutes) {
+    const zoneId = this.$('manual-modal-zone').value;
+    this.closeManualModal();
+    if (zoneId) await this.manualWater(zoneId, true, minutes);
+  }
+
+  async startManualCustom() {
+    const zoneId = this.$('manual-modal-zone').value;
+    const minutes = parseFloat(this.$('manual-custom-min').value);
+    if (!minutes || minutes <= 0) {
+      this._toast('Enter a duration in minutes');
+      return;
+    }
+    this.closeManualModal();
+    if (zoneId) await this.manualWater(zoneId, true, minutes);
+  }
+
+  async startManualOpen() {
+    const zoneId = this.$('manual-modal-zone').value;
+    this.closeManualModal();
+    if (zoneId) await this.manualWater(zoneId, true);
   }
 
   async skipDay() {

@@ -9,7 +9,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_sunrise, async_track_time_change
+from homeassistant.helpers.event import async_call_later, async_track_sunrise, async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.sun import get_astral_location
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -96,6 +96,10 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._rain_delay_until: str | None = None
         # Manual override: zone_id -> ISO start timestamp while running
         self._manual_active: dict[str, str] = {}
+        # Planned end (ISO) when manual run has a timer; same key as _manual_active
+        self._manual_ends: dict[str, str] = {}
+        # Per-zone async_call_later cancel handles for the auto-stop timer
+        self._manual_timers: dict[str, Any] = {}
 
         # Running daily accumulators
         self._today: date | None = None
@@ -337,6 +341,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "status": self._get_zone_status(zone),
                     "manual_active": zone[CONF_ZONE_ID] in self._manual_active,
                     "manual_started": self._manual_active.get(zone[CONF_ZONE_ID]),
+                    "manual_ends": self._manual_ends.get(zone[CONF_ZONE_ID]),
                     "water_used": round(
                         self._zone_water_used.get(zone[CONF_ZONE_ID], 0.0), 1
                     ),
@@ -753,9 +758,16 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._process_watering_queue()
         )
 
-    async def async_manual_toggle(self, zone_id: str, turn_on: bool) -> None:
+    async def async_manual_toggle(
+        self,
+        zone_id: str,
+        turn_on: bool,
+        duration_minutes: float | None = None,
+    ) -> None:
         """Manually start/stop watering a zone.
 
+        When ``duration_minutes`` is given on turn-on, the run auto-stops after
+        that long. Without it, the run is open-ended until the user stops it.
         Turning off counts the elapsed run time, converts it to mm using the
         zone's sprinkler rate, and reduces the deficit (never below 0).
         """
@@ -775,8 +787,22 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self.hass.services.async_call(
                 "switch", "turn_on", {"entity_id": switch_entity}
             )
-            self._manual_active[zone_id] = datetime.now().isoformat()
-            LOGGER.info("Manual watering ON for zone %s", zone_id)
+            now = datetime.now()
+            self._manual_active[zone_id] = now.isoformat()
+            if duration_minutes and duration_minutes > 0:
+                end = now + timedelta(minutes=duration_minutes)
+                self._manual_ends[zone_id] = end.isoformat()
+                self._manual_timers[zone_id] = async_call_later(
+                    self.hass,
+                    duration_minutes * 60,
+                    self._manual_timer_done(zone_id),
+                )
+                LOGGER.info(
+                    "Manual watering ON for zone %s (auto-stop in %.1f min)",
+                    zone_id, duration_minutes,
+                )
+            else:
+                LOGGER.info("Manual watering ON for zone %s (open-ended)", zone_id)
         else:
             await self._finalize_manual(zone_id)
 
@@ -785,9 +811,28 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # poll sees the new state instead of the still-debounced previous dict.
         await self.async_refresh()
 
+    def _manual_timer_done(self, zone_id: str):
+        """Build the auto-stop callback for async_call_later."""
+        async def _fire(_now):
+            self._manual_timers.pop(zone_id, None)
+            if zone_id not in self._manual_active:
+                return  # already stopped by user
+            LOGGER.info("Manual watering timer expired for zone %s", zone_id)
+            await self._finalize_manual(zone_id)
+            await self._persist()
+            await self.async_refresh()
+        return _fire
+
     async def _finalize_manual(self, zone_id: str) -> None:
         """Stop a manual run, applying the watered mm to the zone deficit."""
         start_iso = self._manual_active.pop(zone_id, None)
+        self._manual_ends.pop(zone_id, None)
+        cancel = self._manual_timers.pop(zone_id, None)
+        if cancel is not None:
+            try:
+                cancel()
+            except Exception:  # noqa: BLE001
+                pass
         zone = self._get_zone_config(zone_id)
         switch_entity = zone.get(CONF_ZONE_SWITCH) if zone else None
 

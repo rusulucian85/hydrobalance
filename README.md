@@ -435,8 +435,15 @@ Off by default (a single pulse equals the old behaviour).
 
 Each zone on the dashboard has a **Manual Water** toggle for on-demand watering:
 
-- **Press it** → the zone's switch turns on and a live timer (mm:ss) starts.
-- **Press Stop Manual** → the switch turns off, and the run is accounted for:
+- **Press it** → a small modal asks for the run length: pick a preset
+  (5 / 10 / 15 / 30 / 45 / 60 min), type a custom number of minutes, or choose
+  *Until I stop* for an open-ended run. The zone's switch turns on and a live
+  countdown (mm:ss) starts — counting **down** to the auto-stop for a timed run,
+  or **up** for an open-ended one.
+- **Auto-stop** — when the timer expires, HydroBalance turns the switch off and
+  credits the elapsed time to the deficit just like a manual stop.
+- **Press Stop Manual** before the timer ends to stop early — the run is
+  accounted for:
 
 ```
 mm_applied  = (elapsed_minutes / 30) × sprinkler_rate
@@ -626,7 +633,7 @@ HA frontend, so it works in the iOS/Android app too). The JS is cache-busted by 
 | `hydrobalance/status` | — | Read live deficits / ET / status |
 | `hydrobalance/discover_sensors` | `weather_entity` | Auto-map sensors |
 | `hydrobalance/force_water` | `zone_id?`, `mm?` | Force watering |
-| `hydrobalance/manual_water` | `zone_id`, `on` | Manual on/off toggle |
+| `hydrobalance/manual_water` | `zone_id`, `on`, `duration_minutes?` | Manual on/off toggle (optional auto-stop timer) |
 | `hydrobalance/skip_day` | — | Skip next check |
 | `hydrobalance/reset_deficit` | `zone_id?` | Reset deficit |
 | `hydrobalance/set_enabled` | `enabled` | Master enable/disable |
@@ -744,6 +751,12 @@ All in `custom_components/hydrobalance/const.py`.
 
 ## 19. Changelog
 
+- **0.11.0** — **Manual watering timer:** the Manual Water button now opens a
+  modal with preset durations (5–60 min), custom minutes, or *Until I stop*. A
+  timed run auto-stops at the end and the live counter on the zone card counts
+  down to it.
+- **0.10.1** — Zone status shows the projected sprinkler **Run** time at the
+  current deficit.
 - **0.10.0** — **Sensor-aware reliability:** per-sensor **Primary → Fallback** resolver
   (real local sensor with a forecast fallback); **field-capacity deficit cap** (clay 30 /
   loam 20 / sandy 12 mm) replacing the flat 60 mm ceiling so a long skip can't bank
