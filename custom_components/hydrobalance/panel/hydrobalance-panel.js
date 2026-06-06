@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.11.0 &mdash; Smart Irrigation</div>
+        <div class="version">v0.11.1 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -756,6 +756,14 @@ class HydroBalancePanel extends HTMLElement {
       let sec;
       if (!isNaN(end)) {
         sec = Math.max(0, Math.floor((end - now) / 1000));
+        // Countdown hit zero — HA finalises around the same instant, but the
+        // panel keeps the stale "Stop Manual" red button until something polls.
+        // Trigger a one-shot refresh (debounced via _fired) with a small grace
+        // so the server-side auto-stop has definitely landed.
+        if (sec === 0 && !sp._fired) {
+          sp._fired = true;
+          setTimeout(() => this._loadAll(), 1500);
+        }
       } else {
         const start = Date.parse(sp.dataset.start);
         if (isNaN(start)) return;
