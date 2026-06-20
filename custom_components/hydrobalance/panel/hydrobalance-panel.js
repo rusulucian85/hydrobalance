@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.12.0 &mdash; Smart Irrigation</div>
+        <div class="version">v0.13.0 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -499,6 +499,12 @@ class HydroBalancePanel extends HTMLElement {
     return `${h}h${String(m).padStart(2, '0')}`;
   }
 
+  _renderLiveDeficit(live, committed) {
+    if (live == null || live === committed) return '';
+    const tip = 'Live estimate — hybrid of running Tmin/Tmax (primary) and forecast Tmax (fill-in early morning), scaled by an ET diurnal curve. Replaced by the real value at 23:00.';
+    return ` <span title="${this._esc(tip)}" style="font-size:0.85em;opacity:0.65;font-weight:normal;">~ ${live} live</span>`;
+  }
+
   _toast(msg) {
     const el = document.createElement('div');
     el.className = 'toast';
@@ -689,7 +695,7 @@ class HydroBalancePanel extends HTMLElement {
             </span>
           </div>
           <div class="zone-stats">
-            <span>Deficit: <strong>${deficit} mm</strong></span>
+            <span title="Committed deficit — set by the 23:00 daily calc, drives watering decisions.">Deficit: <strong>${deficit} mm</strong>${this._renderLiveDeficit(zdata.water_deficit_live, deficit)}</span>
             <span>Sun: <strong>${sunCoeff}</strong></span>
             <span>Threshold: ${threshold} mm</span>
             <span title="${this._esc(runTitle)}">Run: <strong>${runFmt}</strong></span>

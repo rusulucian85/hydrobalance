@@ -758,6 +758,12 @@ All in `custom_components/hydrobalance/const.py`.
 
 ## 19. Changelog
 
+- **0.13.0** — **Live deficit estimate** on each zone card. Per 15-min poll a
+  hybrid number is computed: `A = ET(Tmin_so_far, Tmax_so_far) × diurnal_fraction`
+  (what actually happened); `B = ET(Tmin_so_far, forecast_Tmax) × diurnal_fraction`
+  (fills in early morning when Tmax hasn't been reached yet). Blend
+  `A·f + B·(1−f)` with `f` ramping up over a sin-shaped daylight curve, so A
+  dominates by afternoon. Replaced by the authoritative committed value at 23:00.
 - **0.12.0** — **Two weather channels + per-zone local sensors.** Settings now
   takes a **Primary** and **Secondary** weather entity (e.g. OWM + PirateWeather);
   the integration reads attributes directly from `weather.*` instead of mapping

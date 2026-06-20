@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections import deque
 from datetime import datetime, timedelta, date
 from typing import Any
@@ -111,6 +112,10 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._daily_peak_uv: float = 0.0
         self._daily_rain: float = 0.0
         self._last_rain_value: float | None = None
+        # Today's forecast Tmax, refreshed each 15-min poll from the weather
+        # entity. Used in the live-deficit hybrid so morning estimates aren't
+        # anchored to the still-cool Tmax_so_far.
+        self._today_forecast_tmax: float | None = None
 
         # Persistent data
         self._zone_deficits: dict[str, float] = {}
@@ -362,6 +367,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._daily_rain += rain * 0.25  # 15min = 0.25h
             self._last_rain_value = rain
 
+        # Refresh today's forecast Tmax (used in the live-deficit hybrid).
+        await self._refresh_forecast_tmax()
+
         # Persist accumulators periodically
         await self._persist()
 
@@ -386,6 +394,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "water_deficit": round(
                         self._zone_deficits.get(zone[CONF_ZONE_ID], 0.0), 1
                     ),
+                    "water_deficit_live": self._zone_live_deficit(zone),
                     "sun_coefficient": round(sun_coefficients.get(zone[CONF_ZONE_ID], 1.0), 2),
                     "status": self._get_zone_status(zone),
                     "manual_active": zone[CONF_ZONE_ID] in self._manual_active,
@@ -636,6 +645,114 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         zone_soil = zone.get(CONF_ZONE_SOIL_OVERRIDE) or self.soil_type
         soil = SOIL_TYPES.get(zone_soil) or SOIL_TYPES.get("clay", {})
         return float(soil.get("field_capacity", DEFICIT_MAX))
+
+    # ─── Live Deficit Estimate ────────────────────────────────────────────────
+
+    async def _refresh_forecast_tmax(self) -> None:
+        """Fetch today's forecast high from the primary (or secondary) weather entity.
+
+        Used in the hybrid live-deficit estimate so morning estimates aren't
+        anchored to the still-cool Tmax-so-far.
+        """
+        for w_entity in (self.weather_primary, self.weather_secondary):
+            if not w_entity:
+                continue
+            try:
+                result = await self.hass.services.async_call(
+                    "weather", "get_forecasts",
+                    {"entity_id": w_entity, "type": "daily"},
+                    blocking=True, return_response=True,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            forecasts = ((result or {}).get(w_entity, {}) or {}).get("forecast", [])
+            if not forecasts:
+                continue
+            today_fc = forecasts[0]
+            tmax = today_fc.get("temperature") or today_fc.get("native_temperature")
+            try:
+                self._today_forecast_tmax = float(tmax) if tmax is not None else None
+            except (TypeError, ValueError):
+                self._today_forecast_tmax = None
+            return  # got it from this entity, stop
+        # No weather entity worked → keep whatever value we last had
+
+    @staticmethod
+    def _et_fraction_of_day() -> float:
+        """How much of the day's ET should have happened by now (0..1).
+
+        Sinusoidal half-wave peaking at 13:00 over the active ET window 06:00-20:00.
+        Closely matches real ET diurnal profile better than a linear ramp.
+        """
+        now = datetime.now()
+        h = now.hour + now.minute / 60
+        if h <= 6:
+            return 0.0
+        if h >= 20:
+            return 1.0
+        return (1 - math.cos(math.pi * (h - 6) / 14)) / 2
+
+    def _zone_live_deficit(self, zone: dict[str, Any]) -> float | None:
+        """Hybrid live deficit estimate — A primary, B fills in early morning.
+
+        A = ET from running Tmin/Tmax × fraction-of-day elapsed.
+        B = ET from running Tmin and forecast Tmax × fraction-of-day elapsed.
+        Hybrid: A·f + B·(1−f). At dawn B dominates; by dusk A is everything.
+        Once today's 23:00 calc runs, the committed deficit is returned as-is.
+        """
+        zid = zone[CONF_ZONE_ID]
+        committed = self._zone_deficits.get(zid, 0.0)
+        # If today's daily calc already ran, the live estimate is just the
+        # committed number (no further ET accumulates until tomorrow).
+        if self._last_calc_date == date.today().isoformat():
+            return committed
+
+        # Per-zone Tmin/Tmax — local accumulator if present, else system.
+        zd = self._zone_daily_temps.get(zid)
+        if zd and zd["tmin"] < 99 and zd["tmax"] > -99:
+            tmin, tmax_a = zd["tmin"], zd["tmax"]
+        elif self._daily_tmin < 99 and self._daily_tmax > -99:
+            tmin, tmax_a = self._daily_tmin, self._daily_tmax
+        else:
+            return None  # no temperature data yet → don't show a live number
+
+        f = self._et_fraction_of_day()
+        uv = self._daily_peak_uv
+        wind = self._resolve_term("wind_speed", zone) or 0.0
+        hum = self._resolve_term("humidity", zone) or 50.0
+        sun_coeff = self._calculate_sun_coefficient(zone)
+        kc = zone.get(CONF_ZONE_CROP_COEFFICIENT, DEFAULT_CROP_COEFFICIENT)
+
+        # A: from what actually happened.
+        base_a = self.calculate_et(tmin, tmax_a, uv, wind, hum)
+        et_a = base_a * sun_coeff * kc * f
+
+        # B: from forecast Tmax, only if it's hotter than what we've seen.
+        tmax_fc = self._today_forecast_tmax
+        if tmax_fc is not None and tmax_fc > tmax_a:
+            base_b = self.calculate_et(tmin, tmax_fc, uv, wind, hum)
+            et_b = base_b * sun_coeff * kc * f
+        else:
+            et_b = et_a
+
+        # Hybrid: A weight ramps up with f (A primary at dusk, B fills morning).
+        live_et = et_a * f + et_b * (1 - f)
+
+        # Wet-soil ET freeze (same rule as the 23:00 calc).
+        zmoisture = self._resolve_term("soil_moisture", zone)
+        if (
+            self.use_soil_moisture
+            and zmoisture is not None
+            and zmoisture > self.moisture_skip_threshold
+        ):
+            live_et = 0.0
+
+        zone_soil = zone.get(CONF_ZONE_SOIL_OVERRIDE) or self.soil_type
+        eff_rain = self.calculate_effective_rain(self._daily_rain, zone_soil)
+
+        live = committed + live_et - eff_rain
+        cap = self._zone_field_capacity(zone)
+        return round(max(DEFICIT_MIN, min(cap, live)), 1)
 
     # ─── ET Calculation ───────────────────────────────────────────────────────
 
