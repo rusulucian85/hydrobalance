@@ -116,6 +116,13 @@ deficit.
 
 ## 3. Sensors — what HydroBalance reads and why
 
+> **New in 0.12.0** — sensor mapping is no longer per-key. In Settings you pick
+> a **Primary** and **Secondary** weather entity (any HA `weather.*`); their
+> attributes provide temperature/humidity/wind/UV/pressure. Per zone, you can
+> optionally pin **Local Sensors** (Temperature, Humidity, Soil moisture) that
+> override the weather channels for that zone. The per-sensor table below still
+> applies internally as the bottom of the resolution chain for legacy installs.
+
 HydroBalance reads plain Home Assistant sensor entities. You map them in the panel
 (Settings → Weather Sensors). Each is read either continuously (every 15 min) or at a
 specific moment.
@@ -751,6 +758,16 @@ All in `custom_components/hydrobalance/const.py`.
 
 ## 19. Changelog
 
+- **0.12.0** — **Two weather channels + per-zone local sensors.** Settings now
+  takes a **Primary** and **Secondary** weather entity (e.g. OWM + PirateWeather);
+  the integration reads attributes directly from `weather.*` instead of mapping
+  seven separate sensor entities. Each zone gains an optional **Local Sensors**
+  card (Temperature / Humidity / Soil moisture). Resolution per term:
+  `zone.local → primary weather → secondary weather → legacy mapping`. Per-zone
+  Tmin/Tmax accumulators are tracked when a local temperature sensor is set.
+  Live values shown next to every picker.
+- **0.11.2** — Offline-sensor banner on the dashboard.
+- **0.11.1** — Manual-timer countdown auto-refreshes when it hits zero.
 - **0.11.0** — **Manual watering timer:** the Manual Water button now opens a
   modal with preset durations (5–60 min), custom minutes, or *Until I stop*. A
   timed run auto-stops at the end and the live counter on the zone card counts

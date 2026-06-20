@@ -46,6 +46,8 @@ def ws_get_config(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
             "moisture_skip_threshold": coordinator.moisture_skip_threshold,
             "use_soil_moisture": coordinator.use_soil_moisture,
             "weather_entity": coordinator.weather_entity,
+            "weather_primary": coordinator.weather_primary,
+            "weather_secondary": coordinator.weather_secondary,
             "use_forecast": coordinator.use_forecast,
         }
         data[entry_id] = store_data
@@ -63,6 +65,8 @@ def ws_get_config(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
     vol.Optional("moisture_skip_threshold"): vol.Coerce(float),
     vol.Optional("use_soil_moisture"): bool,
     vol.Optional("weather_entity"): vol.Any(str, None),
+    vol.Optional("weather_primary"): vol.Any(str, None),
+    vol.Optional("weather_secondary"): vol.Any(str, None),
     vol.Optional("use_forecast"): bool,
 })
 @websocket_api.async_response
@@ -95,6 +99,10 @@ async def ws_save_config(hass: HomeAssistant, connection: websocket_api.ActiveCo
         coordinator._store_data["use_soil_moisture"] = msg["use_soil_moisture"]
     if "weather_entity" in msg:
         coordinator._store_data["weather_entity"] = msg["weather_entity"]
+    if "weather_primary" in msg:
+        coordinator._store_data["weather_primary"] = msg["weather_primary"]
+    if "weather_secondary" in msg:
+        coordinator._store_data["weather_secondary"] = msg["weather_secondary"]
     if "use_forecast" in msg:
         coordinator._store_data["use_forecast"] = msg["use_forecast"]
 

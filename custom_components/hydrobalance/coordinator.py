@@ -33,6 +33,9 @@ from .const import (
     CONF_USE_SOIL_MOISTURE,
     DEFAULT_USE_SOIL_MOISTURE,
     CONF_WEATHER_ENTITY,
+    CONF_WEATHER_PRIMARY,
+    CONF_WEATHER_SECONDARY,
+    CONF_ZONE_LOCAL_SENSORS,
     CONF_SENSOR_TEMPERATURE,
     CONF_SENSOR_TEMPERATURE_MIN,
     CONF_SENSOR_HUMIDITY,
@@ -134,8 +137,13 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             CONF_MOISTURE_SKIP_THRESHOLD: DEFAULT_MOISTURE_SKIP_THRESHOLD,
             CONF_USE_SOIL_MOISTURE: DEFAULT_USE_SOIL_MOISTURE,
             CONF_WEATHER_ENTITY: None,
+            CONF_WEATHER_PRIMARY: None,
+            CONF_WEATHER_SECONDARY: None,
             CONF_USE_FORECAST: True,
         }
+        # Per-zone running Tmin/Tmax accumulators (populated when a zone has a
+        # local temperature sensor; otherwise it uses the system-wide values).
+        self._zone_daily_temps: dict[str, dict[str, float]] = {}
 
     @property
     def config(self) -> dict[str, Any]:
@@ -167,10 +175,29 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @property
     def weather_entity(self) -> str | None:
-        """Get the weather entity (panel storage, falling back to config entry)."""
-        return self._store_data.get(CONF_WEATHER_ENTITY) or self.config.get(
-            CONF_WEATHER_ENTITY
+        """Legacy: the single weather entity (used for sensor discovery).
+
+        Returns the primary weather channel if set, otherwise the old config.
+        """
+        return (
+            self._store_data.get(CONF_WEATHER_PRIMARY)
+            or self._store_data.get(CONF_WEATHER_ENTITY)
+            or self.config.get(CONF_WEATHER_ENTITY)
         )
+
+    @property
+    def weather_primary(self) -> str | None:
+        """Primary weather channel (e.g. weather.openweathermap)."""
+        return (
+            self._store_data.get(CONF_WEATHER_PRIMARY)
+            or self._store_data.get(CONF_WEATHER_ENTITY)
+            or self.config.get(CONF_WEATHER_ENTITY)
+        )
+
+    @property
+    def weather_secondary(self) -> str | None:
+        """Secondary weather channel, used when the primary is unavailable."""
+        return self._store_data.get(CONF_WEATHER_SECONDARY)
 
     @property
     def use_forecast(self) -> bool:
@@ -228,6 +255,13 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._store_data[CONF_WEATHER_ENTITY] = stored.get(
                 CONF_WEATHER_ENTITY, self.config.get(CONF_WEATHER_ENTITY)
             )
+            # Weather channels: primary defaults to the legacy single weather
+            # entity so existing installs keep working unchanged.
+            self._store_data[CONF_WEATHER_PRIMARY] = stored.get(
+                CONF_WEATHER_PRIMARY,
+                stored.get(CONF_WEATHER_ENTITY) or self.config.get(CONF_WEATHER_ENTITY),
+            )
+            self._store_data[CONF_WEATHER_SECONDARY] = stored.get(CONF_WEATHER_SECONDARY)
             self._store_data[CONF_USE_FORECAST] = stored.get(
                 CONF_USE_FORECAST, self.config.get(CONF_USE_FORECAST, True)
             )
@@ -289,20 +323,35 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._daily_peak_uv = 0.0
             self._daily_rain = 0.0
             self._last_rain_value = None
+            self._zone_daily_temps = {}
 
-        # Read current sensor values
-        temp = self._read_sensor(CONF_SENSOR_TEMPERATURE)
-        humidity = self._read_sensor(CONF_SENSOR_HUMIDITY)
-        wind = self._read_sensor(CONF_SENSOR_WIND_SPEED)
-        uv = self._read_sensor(CONF_SENSOR_UV_INDEX)
-        rain = self._read_sensor(CONF_SENSOR_RAIN)
+        # Read current values via the new resolver chain (zone-local → primary
+        # weather attr → secondary weather attr → legacy sensor mapping).
+        temp = self._resolve_term("temperature")
+        uv = self._resolve_term("uv_index")
+        rain = self._resolve_term("rain")
 
-        # Track running min/max
+        # Track running min/max — system-wide (used for zones without a local
+        # temperature sensor).
         if temp is not None:
             self._daily_tmin = min(self._daily_tmin, temp)
             self._daily_tmax = max(self._daily_tmax, temp)
         if uv is not None:
             self._daily_peak_uv = max(self._daily_peak_uv, uv)
+
+        # Per-zone temperature accumulators for zones with a local temp sensor.
+        # Zones without one fall back to the system Tmin/Tmax above.
+        for zone in self.zones:
+            local_temp_id = (zone.get(CONF_ZONE_LOCAL_SENSORS) or {}).get("temperature")
+            if not local_temp_id:
+                continue
+            zone_temp = self._read_entity(local_temp_id)
+            if zone_temp is None:
+                continue
+            zid = zone[CONF_ZONE_ID]
+            zd = self._zone_daily_temps.setdefault(zid, {"tmin": 99.0, "tmax": -99.0})
+            zd["tmin"] = min(zd["tmin"], zone_temp)
+            zd["tmax"] = max(zd["tmax"], zone_temp)
 
         # Accumulate rain
         if rain is not None:
@@ -384,6 +433,70 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except (ValueError, TypeError):
             return None
 
+    def _read_weather_attr(self, weather_entity: str | None, attr: str) -> float | None:
+        """Read a numeric attribute from a weather entity's state."""
+        if not weather_entity:
+            return None
+        state = self.hass.states.get(weather_entity)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return None
+        val = state.attributes.get(attr)
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    # Maps our term keys to weather-entity attribute names.
+    _WEATHER_ATTR = {
+        "temperature": "temperature",
+        "humidity": "humidity",
+        "wind_speed": "wind_speed",
+        "uv_index": "uv_index",
+        "pressure": "pressure",
+    }
+    # Maps term keys to the legacy CONF_SENSOR_* fields, for the bottom of the
+    # resolution chain (rain rate, soil moisture, forecast bits without an attr).
+    _LEGACY_SENSOR = {
+        "temperature": CONF_SENSOR_TEMPERATURE,
+        "temperature_min": CONF_SENSOR_TEMPERATURE_MIN,
+        "humidity": CONF_SENSOR_HUMIDITY,
+        "wind_speed": CONF_SENSOR_WIND_SPEED,
+        "uv_index": CONF_SENSOR_UV_INDEX,
+        "rain": CONF_SENSOR_RAIN,
+        "rain_forecast": CONF_SENSOR_RAIN_FORECAST,
+        "soil_moisture": CONF_SENSOR_SOIL_MOISTURE,
+    }
+
+    def _resolve_term(
+        self,
+        term: str,
+        zone: dict[str, Any] | None = None,
+    ) -> float | None:
+        """Resolve a measurement term in priority order.
+
+        1. Zone-local sensor (if a zone is given and has one mapped for ``term``).
+        2. Primary weather channel attribute.
+        3. Secondary weather channel attribute.
+        4. Legacy per-sensor mapping (``sensors`` / ``sensors_fallback``).
+        """
+        if zone is not None:
+            local = (zone.get(CONF_ZONE_LOCAL_SENSORS) or {}).get(term)
+            v = self._read_entity(local)
+            if v is not None:
+                return v
+        attr = self._WEATHER_ATTR.get(term)
+        if attr:
+            v = self._read_weather_attr(self.weather_primary, attr)
+            if v is not None:
+                return v
+            v = self._read_weather_attr(self.weather_secondary, attr)
+            if v is not None:
+                return v
+        legacy = self._LEGACY_SENSOR.get(term)
+        if legacy:
+            return self._read_sensor(legacy)
+        return None
+
     def _read_sensor(self, config_key: str) -> float | None:
         """Read a sensor value, preferring the real local sensor over the fallback.
 
@@ -418,39 +531,105 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         (CONF_SENSOR_SOIL_MOISTURE, "Soil moisture"),
     )
 
-    def _sensor_health(self) -> list[dict[str, Any]]:
-        """Per-configured-sensor status so the panel can surface offline sources.
+    _LOCAL_SENSOR_LABELS = (
+        ("temperature", "Temperature"),
+        ("humidity", "Humidity"),
+        ("soil_moisture", "Soil moisture"),
+    )
 
-        Each entry says which entity is mapped as primary/fallback, whether
-        either is currently available, and which one (if any) is supplying the
-        value right now.
+    def _weather_available(self, weather_entity: str | None) -> bool:
+        """True iff the given weather entity exists and is reporting a state."""
+        if not weather_entity:
+            return False
+        state = self.hass.states.get(weather_entity)
+        return state is not None and state.state not in ("unknown", "unavailable")
+
+    def _sensor_health(self) -> dict[str, Any]:
+        """Snapshot of where each data source stands right now.
+
+        Layout (consumed by the panel banner):
+
+        - ``weather_primary`` / ``weather_secondary``: entity id + availability
+        - ``zones``: per-zone local-sensor entity + reading
+        - ``legacy``: any sensor still mapped via the old per-key flow that
+          isn't currently reporting (for installs not yet migrated)
+        - ``issues``: ordered list of {severity, message} for the dashboard
         """
+        primary = self.weather_primary
+        secondary = self.weather_secondary
+        primary_ok = self._weather_available(primary)
+        secondary_ok = self._weather_available(secondary)
+
+        zones_health: list[dict[str, Any]] = []
+        for zone in self.zones:
+            local = zone.get(CONF_ZONE_LOCAL_SENSORS) or {}
+            entries = []
+            for term, label in self._LOCAL_SENSOR_LABELS:
+                entity = local.get(term)
+                if not entity:
+                    continue
+                value = self._read_entity(entity)
+                entries.append({
+                    "term": term,
+                    "label": label,
+                    "entity": entity,
+                    "value": value,
+                    "available": value is not None,
+                })
+            if entries:
+                zones_health.append({
+                    "id": zone[CONF_ZONE_ID],
+                    "name": zone.get(CONF_ZONE_NAME, zone[CONF_ZONE_ID]),
+                    "local": entries,
+                })
+
+        # Legacy sensors that still have a mapping but aren't currently fresh.
+        legacy_offline: list[dict[str, Any]] = []
         sensors = self._store_data.get("sensors", {})
         sensors_fallback = self._store_data.get("sensors_fallback", {})
-        health: list[dict[str, Any]] = []
         for key, label in self._SENSOR_LABELS:
-            primary = sensors.get(key) or self.config.get(key)
-            fallback = sensors_fallback.get(key)
-            if not primary and not fallback:
-                continue  # nothing mapped → don't report
-            primary_val = self._read_entity(primary)
-            fallback_val = self._read_entity(fallback)
-            source: str | None = None
-            if primary_val is not None:
-                source = "primary"
-            elif fallback_val is not None:
-                source = "fallback"
-            health.append({
-                "key": key,
-                "label": label,
-                "primary": primary,
-                "fallback": fallback,
-                "primary_available": primary_val is not None,
-                "fallback_available": fallback_val is not None,
-                "source": source,
-                "available": source is not None,
-            })
-        return health
+            p = sensors.get(key) or self.config.get(key)
+            f = sensors_fallback.get(key)
+            if not p and not f:
+                continue
+            if self._read_entity(p) is None and self._read_entity(f) is None:
+                legacy_offline.append({"key": key, "label": label, "primary": p, "fallback": f})
+
+        issues: list[dict[str, str]] = []
+        if primary and secondary and not primary_ok and not secondary_ok:
+            issues.append({"severity": "critical", "message": (
+                f"Both weather channels offline ({primary} & {secondary}) — values may be stale"
+            )})
+        elif primary and not primary_ok and secondary_ok:
+            issues.append({"severity": "warning", "message": (
+                f"Primary weather {primary} offline — using secondary {secondary}"
+            )})
+        elif primary and not primary_ok and not secondary:
+            issues.append({"severity": "critical", "message": (
+                f"Weather channel {primary} offline and no secondary configured"
+            )})
+        elif not primary and not secondary and not legacy_offline:
+            issues.append({"severity": "warning", "message": (
+                "No weather channel configured — set one in Settings"
+            )})
+        for zh in zones_health:
+            for e in zh["local"]:
+                if not e["available"]:
+                    issues.append({"severity": "info", "message": (
+                        f"Zone {zh['name']}: local {e['label']} ({e['entity']}) offline"
+                    )})
+        for lo in legacy_offline:
+            issues.append({"severity": "info", "message": (
+                f"Legacy sensor {lo['label']} offline (consider migrating to a weather channel)"
+            )})
+
+        return {
+            "weather_primary": {"entity": primary, "available": primary_ok} if primary else None,
+            "weather_secondary": {"entity": secondary, "available": secondary_ok} if secondary else None,
+            "zones": zones_health,
+            "legacy_offline": legacy_offline,
+            "issues": issues,
+        }
 
     def _zone_field_capacity(self, zone: dict[str, Any]) -> float:
         """Max plant-available water (mm) for this zone's soil — caps the deficit."""
@@ -509,15 +688,16 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         tmin = self._daily_tmin if self._daily_tmin < 99 else None
         tmax = self._daily_tmax if self._daily_tmax > -99 else None
         uv = self._daily_peak_uv
-        wind = self._read_sensor(CONF_SENSOR_WIND_SPEED) or 0.0
-        humidity = self._read_sensor(CONF_SENSOR_HUMIDITY) or 50.0
+        wind = self._resolve_term("wind_speed") or 0.0
+        humidity = self._resolve_term("humidity") or 50.0
         rain = self._daily_rain
 
         if tmin is None or tmax is None:
             LOGGER.warning("Missing temperature data, skipping ET calculation")
             return
 
-        # Calculate ET
+        # System-level ET — what the dashboard shows. Per-zone ET below uses
+        # the zone's own local-sensor accumulators when configured.
         et = self.calculate_et(tmin, tmax, uv, wind, humidity)
 
         # Calculate effective rain (system-level, then adjusted per zone)
@@ -533,35 +713,39 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             et, rain, eff_rain_system, tmin, tmax, uv, wind, humidity,
         )
 
-        # When the soil-moisture sensor says the ground is still wet, don't pile
-        # on ET debt — the measurement overrides the estimate. Only rain is
-        # applied (it can still pay down an existing deficit). This is the
-        # "trust the sensor over the model" half of the flip switch; it falls
-        # back to ET-only automatically when the sensor is unavailable.
-        moisture = self._read_sensor(CONF_SENSOR_SOIL_MOISTURE)
-        freeze_et = (
-            self.use_soil_moisture
-            and moisture is not None
-            and moisture > self.moisture_skip_threshold
-        )
-        if freeze_et:
-            LOGGER.info(
-                "Soil moisture %.0f%% > %.0f%% — freezing ET, only rain applied today",
-                moisture, self.moisture_skip_threshold,
-            )
-
-        # Update each zone's deficit
+        # Update each zone's deficit. Each zone may carry its own local
+        # temperature/humidity/soil-moisture sensors; when present the zone's
+        # own ET and freeze decision use those instead of the system-wide ones.
         for zone in self.zones:
             zid = zone[CONF_ZONE_ID]
             sun_coeff = self._calculate_sun_coefficient(zone)
+
+            # Per-zone Tmin/Tmax — use the local-sensor accumulator when set,
+            # otherwise fall back to the system-wide values.
+            zd = self._zone_daily_temps.get(zid)
+            if zd and zd["tmin"] < 99 and zd["tmax"] > -99:
+                ztmin, ztmax = zd["tmin"], zd["tmax"]
+            else:
+                ztmin, ztmax = tmin, tmax
+            zhumidity = self._resolve_term("humidity", zone) or humidity
+            zwind = self._resolve_term("wind_speed", zone) or wind
+            zone_base_et = self.calculate_et(ztmin, ztmax, uv, zwind, zhumidity)
+
+            # Per-zone wet-soil ET freeze — uses the zone's own moisture if it
+            # has a local sensor; otherwise the system-wide soil sensor.
+            zmoisture = self._resolve_term("soil_moisture", zone)
+            freeze_et = (
+                self.use_soil_moisture
+                and zmoisture is not None
+                and zmoisture > self.moisture_skip_threshold
+            )
 
             # Per-zone soil type (override or system default)
             zone_soil = zone.get(CONF_ZONE_SOIL_OVERRIDE) or system_soil
             eff_rain = self.calculate_effective_rain(rain, zone_soil)
 
-            # Zone ET adjusted by sun exposure and crop coefficient
             kc = zone.get(CONF_ZONE_CROP_COEFFICIENT, DEFAULT_CROP_COEFFICIENT)
-            zone_et = 0.0 if freeze_et else et * sun_coeff * kc
+            zone_et = 0.0 if freeze_et else zone_base_et * sun_coeff * kc
 
             # Update deficit — cap at the soil's field capacity so a long skip
             # can't accumulate more debt than the soil could physically lose.
@@ -572,8 +756,11 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._zone_deficits[zid] = round(new_deficit, 1)
 
             LOGGER.info(
-                "Zone %s: ET=%.2f×%.2f×Kc%.2f=%.2fmm, EffRain=%.2fmm, Deficit: %.1f→%.1f",
-                zid, et, sun_coeff, kc, zone_et, eff_rain, current, new_deficit,
+                "Zone %s: ET=%.2f×%.2f×Kc%.2f=%.2fmm (Tmin=%.1f Tmax=%.1f Hum=%.0f Wind=%.1f%s), EffRain=%.2fmm, Deficit: %.1f→%.1f",
+                zid, zone_base_et, sun_coeff, kc, zone_et,
+                ztmin, ztmax, zhumidity, zwind,
+                " FROZEN(wet)" if freeze_et else "",
+                eff_rain, current, new_deficit,
             )
 
         self._last_calc_date = today_str
@@ -627,20 +814,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._log_event("skipped", reason="rain_forecast")
                 return
 
-        # Soil-moisture skip (real sensor feedback overrides ET estimate).
-        # Only consulted when the soil-moisture mode is enabled; otherwise the
-        # system runs purely on the ET deficit model.
-        if self.use_soil_moisture:
-            moisture = self._read_sensor(CONF_SENSOR_SOIL_MOISTURE)
-            if moisture is not None and moisture > self.moisture_skip_threshold:
-                LOGGER.info(
-                    "Soil moisture %.1f%% > %.1f%%, skipping watering",
-                    moisture, self.moisture_skip_threshold,
-                )
-                self._log_event("skipped", reason="soil_moisture")
-                return
-
-        # Build watering queue
+        # Build watering queue — each candidate zone is skipped individually
+        # when its own (or the system fallback) soil moisture is above the
+        # threshold, so zones with different local sensors decide independently.
         queue = []
         for zone in self.zones:
             zid = zone[CONF_ZONE_ID]
@@ -649,9 +825,19 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 CONF_ZONE_DEFICIT_THRESHOLD,
                 self.strategy["deficit_threshold"],
             )
-            if deficit > threshold:
-                queue.append(zid)
-                LOGGER.info("Zone %s deficit %.1f > threshold %.1f → queued", zid, deficit, threshold)
+            if deficit <= threshold:
+                continue
+            if self.use_soil_moisture:
+                zmoisture = self._resolve_term("soil_moisture", zone)
+                if zmoisture is not None and zmoisture > self.moisture_skip_threshold:
+                    LOGGER.info(
+                        "Zone %s skipped — moisture %.1f%% > %.1f%%",
+                        zid, zmoisture, self.moisture_skip_threshold,
+                    )
+                    self._log_event("skipped", zone_id=zid, reason="soil_moisture")
+                    continue
+            queue.append(zid)
+            LOGGER.info("Zone %s deficit %.1f > threshold %.1f → queued", zid, deficit, threshold)
 
         if not queue:
             LOGGER.info("No zones need watering")
@@ -1064,5 +1250,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             CONF_MOISTURE_SKIP_THRESHOLD: self.moisture_skip_threshold,
             CONF_USE_SOIL_MOISTURE: self.use_soil_moisture,
             CONF_WEATHER_ENTITY: self._store_data.get(CONF_WEATHER_ENTITY),
+            CONF_WEATHER_PRIMARY: self._store_data.get(CONF_WEATHER_PRIMARY),
+            CONF_WEATHER_SECONDARY: self._store_data.get(CONF_WEATHER_SECONDARY),
             CONF_USE_FORECAST: self._store_data.get(CONF_USE_FORECAST, True),
         })

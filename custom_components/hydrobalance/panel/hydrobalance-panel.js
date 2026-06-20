@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.11.2 &mdash; Smart Irrigation</div>
+        <div class="version">v0.12.0 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -227,41 +227,37 @@ const TEMPLATE = `
 
     <div id="tab-settings" class="hidden">
       <div class="card">
-        <h2>Weather Source</h2>
+        <h2>Weather Channels</h2>
         <p style="font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;">
-          The weather integration that ET is calculated from. After changing it,
-          re-discover sensors below.
+          ET is calculated from the <strong>Primary</strong> weather channel. If it goes unavailable,
+          values are read from the <strong>Secondary</strong>. Each channel is a <code>weather.*</code>
+          entity — no per-sensor mapping needed.
         </p>
         <div class="form-group">
-          <label>Weather Entity</label>
-          <input type="text" id="weather-entity" list="dl-weather" placeholder="weather.home" autocapitalize="off" autocomplete="off">
+          <label>Primary Weather Channel</label>
+          <input type="text" id="weather-primary" list="dl-weather" placeholder="weather.openweathermap" autocapitalize="off" autocomplete="off" oninput="window.__hb._refreshWeatherPreview('primary')">
+          <div id="weather-primary-preview" style="margin-top:6px;padding:8px 10px;border-radius:8px;background:rgba(0,0,0,0.04);"></div>
+        </div>
+        <div class="form-group">
+          <label>Secondary Weather Channel <span style="opacity:0.6;font-weight:normal;">(optional fallback)</span></label>
+          <input type="text" id="weather-secondary" list="dl-weather" placeholder="weather.pirateweather" autocapitalize="off" autocomplete="off" oninput="window.__hb._refreshWeatherPreview('secondary')">
+          <div id="weather-secondary-preview" style="margin-top:6px;padding:8px 10px;border-radius:8px;background:rgba(0,0,0,0.04);"></div>
         </div>
         <div class="form-group" style="display:flex;align-items:center;gap:8px;">
           <input type="checkbox" id="use-forecast" style="width:auto;">
           <label for="use-forecast" style="margin:0;">Skip watering when rain is forecast</label>
         </div>
         <div class="actions">
-          <button class="btn btn-primary" onclick="window.__hb.saveWeatherConfig()">Save Weather Source</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2>Weather Sensors</h2>
-        <p style="font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;">
-          Auto-discovered from your weather integration. Adjust if needed.
-        </p>
-        <div id="sensor-list"><div class="loading">Loading...</div></div>
-        <div class="actions">
-          <button class="btn btn-primary" onclick="window.__hb.saveWeatherSensors()">Save Sensors</button>
-          <button class="btn btn-outline" onclick="window.__hb.discoverSensors()">Re-discover Sensors</button>
+          <button class="btn btn-primary" onclick="window.__hb.saveWeatherChannels()">Save Weather Channels</button>
         </div>
       </div>
 
       <div class="card">
         <h2>Soil Moisture Sensor</h2>
         <p style="font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;">
-          Optional. When set, watering is skipped if measured soil moisture is above the threshold &mdash;
-          real-sensor feedback overrides the ET estimate.
+          System-wide fallback. Used for zones that don't have their own local soil-moisture
+          sensor (configured in the zone editor). When measured moisture is above the threshold,
+          ET is frozen and watering is skipped &mdash; real-sensor feedback overrides the ET estimate.
         </p>
         <div class="form-group" style="display:flex;align-items:center;gap:8px;">
           <input type="checkbox" id="use-soil-moisture" style="width:auto;">
@@ -409,6 +405,27 @@ const TEMPLATE = `
             <option value="sandy">Sandy</option>
           </select>
         </div>
+
+        <fieldset style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:8px;">
+          <legend style="font-size:0.9em;padding:0 6px;">Local Sensors <span style="opacity:0.6;font-weight:normal;">(optional)</span></legend>
+          <p style="margin:0 0 10px;font-size:0.8em;opacity:0.75;">Per-zone overrides. When set, the zone uses these instead of the weather channels for ET. Live values shown after the field updates.</p>
+          <div class="form-group">
+            <label>Local Temperature</label>
+            <input type="text" id="zone-local-temp" list="dl-sensors" placeholder="e.g. sensor.front_garden_temp" autocapitalize="off" autocomplete="off" oninput="window.__hb._refreshLocalPreview('temp')">
+            <div id="zone-local-temp-preview" style="margin-top:4px;font-size:0.8em;"></div>
+          </div>
+          <div class="form-group">
+            <label>Local Humidity</label>
+            <input type="text" id="zone-local-humidity" list="dl-sensors" placeholder="e.g. sensor.front_garden_humidity" autocapitalize="off" autocomplete="off" oninput="window.__hb._refreshLocalPreview('humidity')">
+            <div id="zone-local-humidity-preview" style="margin-top:4px;font-size:0.8em;"></div>
+          </div>
+          <div class="form-group">
+            <label>Local Soil Moisture</label>
+            <input type="text" id="zone-local-soil" list="dl-sensors" placeholder="e.g. sensor.front_garden_soil_moisture" autocapitalize="off" autocomplete="off" oninput="window.__hb._refreshLocalPreview('soil')">
+            <div id="zone-local-soil-preview" style="margin-top:4px;font-size:0.8em;"></div>
+          </div>
+        </fieldset>
+
         <div class="actions">
           <button class="btn btn-outline" onclick="window.__hb.closeZoneModal()">Cancel</button>
           <button class="btn btn-danger hidden" id="zone-delete-btn" onclick="window.__hb.deleteZone()">Delete</button>
@@ -544,35 +561,32 @@ class HydroBalancePanel extends HTMLElement {
     const card = this.$('sensor-health-card');
     const title = this.$('sensor-health-title');
     const body = this.$('sensor-health-body');
-    const offline = health.filter(h => !h.available);
-    const degraded = health.filter(h => h.available && h.source === 'fallback');
+    const issues = (health && health.issues) || [];
 
-    if (offline.length === 0 && degraded.length === 0) {
+    if (issues.length === 0) {
       card.classList.add('hidden');
       return;
     }
     card.classList.remove('hidden');
 
-    let html = '';
-    if (offline.length > 0) {
-      card.style.borderLeftColor = 'var(--danger)';
-      title.innerHTML = `&#9888; ${offline.length} sensor${offline.length > 1 ? 's' : ''} offline &mdash; values may be stale`;
-      html += offline.map(h => {
-        const where = h.primary && h.fallback ? 'primary &amp; fallback both unavailable'
-          : h.primary ? `primary <code>${this._esc(h.primary)}</code> unavailable`
-          : `fallback <code>${this._esc(h.fallback)}</code> unavailable`;
-        return `<div><strong>${this._esc(h.label)}:</strong> ${where}</div>`;
-      }).join('');
-    } else {
-      card.style.borderLeftColor = 'var(--warning)';
-      title.innerHTML = `&#9432; Using fallback for ${degraded.length} sensor${degraded.length > 1 ? 's' : ''}`;
-    }
-    if (degraded.length > 0) {
-      html += degraded.map(h =>
-        `<div style="opacity:0.85;"><strong>${this._esc(h.label)}:</strong> primary down, using fallback <code>${this._esc(h.fallback)}</code></div>`
-      ).join('');
-    }
-    body.innerHTML = html;
+    const sev = (i) => i.severity || 'info';
+    const order = { critical: 0, warning: 1, info: 2 };
+    const sorted = [...issues].sort((a, b) => (order[sev(a)] ?? 9) - (order[sev(b)] ?? 9));
+    const top = sev(sorted[0]);
+    const color = top === 'critical' ? 'var(--danger)' : top === 'warning' ? 'var(--warning, #e65100)' : 'var(--primary)';
+    card.style.borderLeftColor = color;
+
+    const icon = top === 'critical' ? '&#9888;' : top === 'warning' ? '&#9888;' : '&#9432;';
+    const count = issues.length;
+    title.innerHTML = `${icon} Sensor health &mdash; ${count} issue${count > 1 ? 's' : ''}`;
+
+    body.innerHTML = sorted.map(i => {
+      const dot = sev(i) === 'critical' ? 'var(--danger)' : sev(i) === 'warning' ? 'var(--warning, #e65100)' : 'var(--primary)';
+      return `<div style="display:flex;gap:8px;align-items:flex-start;margin-top:2px;">
+        <span style="color:${dot};">&#9679;</span>
+        <span>${this._esc(i.message)}</span>
+      </div>`;
+    }).join('');
   }
 
   _renderDashboard() {
@@ -580,7 +594,7 @@ class HydroBalancePanel extends HTMLElement {
     const s = this._status[this._currentEntryId];
     const daily = s.daily || {};
 
-    this._renderSensorHealth(s.sensor_health || []);
+    this._renderSensorHealth(s.sensor_health || {});
 
     this.$('stat-et').textContent = daily.et != null ? daily.et : '--';
     this.$('stat-rain').textContent = daily.rain_accumulated != null ? daily.rain_accumulated : '--';
@@ -864,37 +878,17 @@ class HydroBalancePanel extends HTMLElement {
     if (!this._currentEntryId) return;
     const entry = this._config[this._currentEntryId];
 
-    this.$('weather-entity').value = (entry && entry.weather_entity) || '';
+    this.$('weather-primary').value = (entry && entry.weather_primary) || (entry && entry.weather_entity) || '';
+    this.$('weather-secondary').value = (entry && entry.weather_secondary) || '';
     this.$('use-forecast').checked = !(entry && entry.use_forecast === false);
     this._populatePicker('dl-weather', 'weather');
+    this._refreshWeatherPreview('primary');
+    this._refreshWeatherPreview('secondary');
 
     this.$('soil-type').value = (entry && entry.soil_type) || 'clay';
     this.$('strategy').value = (entry && entry.strategy) || 'balanced';
 
     const sensors = (entry && entry.sensors) || {};
-    const sensorsFallback = (entry && entry.sensors_fallback) || {};
-    const sensorKeys = [
-      ['sensor_temperature', 'Temperature'],
-      ['sensor_temperature_min', 'Forecast Min (frost check)'],
-      ['sensor_humidity', 'Humidity'],
-      ['sensor_wind_speed', 'Wind Speed'],
-      ['sensor_uv_index', 'UV Index'],
-      ['sensor_rain', 'Rain'],
-      ['sensor_rain_forecast', 'Rain Forecast'],
-    ];
-    let html = `<p style="margin:0 0 8px;opacity:0.7;font-size:0.85em">Primary = your real local sensor. Fallback is used only when the primary is unavailable (e.g. a weather-forecast entity).</p>`;
-    for (const [key, label] of sensorKeys) {
-      const val = sensors[key] || '';
-      const fb = sensorsFallback[key] || '';
-      html += `
-        <div class="form-group">
-          <label>${label}</label>
-          <input type="text" id="ws-${key}" list="dl-sensors" value="${this._esc(val)}" placeholder="Primary (real sensor)" autocapitalize="off" autocomplete="off">
-          <input type="text" id="wsfb-${key}" list="dl-sensors" value="${this._esc(fb)}" placeholder="Fallback (optional)" autocapitalize="off" autocomplete="off" style="margin-top:4px">
-        </div>`;
-    }
-    this.$('sensor-list').innerHTML = html;
-
     this.$('use-soil-moisture').checked = !(entry && entry.use_soil_moisture === false);
     this.$('soil-moisture-sensor').value = sensors.sensor_soil_moisture || '';
     this.$('moisture-threshold').value = (entry && entry.moisture_skip_threshold != null) ? entry.moisture_skip_threshold : 40;
@@ -932,6 +926,10 @@ class HydroBalancePanel extends HTMLElement {
       this.$('zone-cycle-soak').checked = !!zone.cycle_soak;
       this.$('zone-pulse').value = zone.pulse_minutes != null ? zone.pulse_minutes : 10;
       this.$('zone-soak').value = zone.soak_minutes != null ? zone.soak_minutes : 20;
+      const ls = zone.local_sensors || {};
+      this.$('zone-local-temp').value = ls.temperature || '';
+      this.$('zone-local-humidity').value = ls.humidity || '';
+      this.$('zone-local-soil').value = ls.soil_moisture || '';
     } else {
       title.textContent = 'Add Zone';
       deleteBtn.classList.add('hidden');
@@ -951,11 +949,45 @@ class HydroBalancePanel extends HTMLElement {
       this.$('zone-cycle-soak').checked = false;
       this.$('zone-pulse').value = '10';
       this.$('zone-soak').value = '20';
+      this.$('zone-local-temp').value = '';
+      this.$('zone-local-humidity').value = '';
+      this.$('zone-local-soil').value = '';
     }
     this.toggleSunFields();
     this.toggleCycleSoakFields();
     this._populatePicker('dl-switches', 'switch');
+    this._populatePicker('dl-sensors', 'sensor');
+    this._refreshLocalPreview('temp');
+    this._refreshLocalPreview('humidity');
+    this._refreshLocalPreview('soil');
     this.$('zone-modal').classList.remove('hidden');
+  }
+
+  _refreshLocalPreview(which) {
+    const map = {
+      temp: { input: 'zone-local-temp', preview: 'zone-local-temp-preview', unit: '°C' },
+      humidity: { input: 'zone-local-humidity', preview: 'zone-local-humidity-preview', unit: '%' },
+      soil: { input: 'zone-local-soil', preview: 'zone-local-soil-preview', unit: '%' },
+    };
+    const cfg = map[which];
+    if (!cfg) return;
+    const el = this.$(cfg.preview);
+    if (!el) return;
+    const entityId = this.$(cfg.input).value.trim();
+    if (!entityId) {
+      el.innerHTML = '<span style="opacity:0.6;font-style:italic;">No local sensor — uses weather channels.</span>';
+      return;
+    }
+    const state = this._hass && this._hass.states[entityId];
+    if (!state) {
+      el.innerHTML = `<span style="color:var(--danger);">&#9888; ${this._esc(entityId)} not found</span>`;
+      return;
+    }
+    if (state.state === 'unavailable' || state.state === 'unknown') {
+      el.innerHTML = `<span style="color:var(--danger);">&#9888; unavailable</span>`;
+      return;
+    }
+    el.innerHTML = `<span style="color:var(--success);">&#10003; <strong>${this._esc(state.state)} ${cfg.unit}</strong></span>`;
   }
 
   closeZoneModal() { this.$('zone-modal').classList.add('hidden'); }
@@ -1002,6 +1034,15 @@ class HydroBalancePanel extends HTMLElement {
       pulse_minutes: parseFloat(this.$('zone-pulse').value) || 10,
       soak_minutes: parseFloat(this.$('zone-soak').value) || 0,
     };
+
+    const localSensors = {};
+    const lt = this.$('zone-local-temp').value.trim();
+    const lh = this.$('zone-local-humidity').value.trim();
+    const ls = this.$('zone-local-soil').value.trim();
+    if (lt) localSensors.temperature = lt;
+    if (lh) localSensors.humidity = lh;
+    if (ls) localSensors.soil_moisture = ls;
+    if (Object.keys(localSensors).length > 0) zone.local_sensors = localSensors;
 
     if (!zone.name) { this._toast('Zone name is required'); return; }
 
@@ -1083,64 +1124,53 @@ class HydroBalancePanel extends HTMLElement {
     }
   }
 
-  async saveWeatherConfig() {
-    const weatherEntity = this.$('weather-entity').value.trim();
+  async saveWeatherChannels() {
+    const primary = this.$('weather-primary').value.trim();
+    const secondary = this.$('weather-secondary').value.trim();
     try {
       await this._ws('hydrobalance/config/save', {
         entry_id: this._currentEntryId,
-        weather_entity: weatherEntity || null,
+        weather_primary: primary || null,
+        weather_secondary: secondary || null,
         use_forecast: this.$('use-forecast').checked,
       });
-      this._toast('Weather source saved!');
+      this._toast('Weather channels saved!');
       await this._loadAll();
     } catch (e) {
       this._toast('Error: ' + (e.message || e));
     }
   }
 
-  async saveWeatherSensors() {
-    const entry = this._config[this._currentEntryId];
-    const sensors = { ...((entry && entry.sensors) || {}) };
-    const sensorsFallback = { ...((entry && entry.sensors_fallback) || {}) };
-    const keys = [
-      'sensor_temperature', 'sensor_temperature_min',
-      'sensor_humidity', 'sensor_wind_speed', 'sensor_uv_index',
-      'sensor_rain', 'sensor_rain_forecast',
-    ];
-    for (const k of keys) {
-      const v = this.$('ws-' + k).value.trim();
-      if (v) sensors[k] = v; else delete sensors[k];
-      const fb = this.$('wsfb-' + k).value.trim();
-      if (fb) sensorsFallback[k] = fb; else delete sensorsFallback[k];
+  _refreshWeatherPreview(which) {
+    const inputId = which === 'primary' ? 'weather-primary' : 'weather-secondary';
+    const previewId = which === 'primary' ? 'weather-primary-preview' : 'weather-secondary-preview';
+    const el = this.$(previewId);
+    if (!el) return;
+    const entityId = this.$(inputId).value.trim();
+    if (!entityId) {
+      el.innerHTML = '<span style="opacity:0.6;font-style:italic;font-size:0.85em;">No channel set.</span>';
+      return;
     }
-    delete sensors.sensor_temperature_max;  // retired field
-    try {
-      await this._ws('hydrobalance/config/save', { entry_id: this._currentEntryId, sensors, sensors_fallback: sensorsFallback });
-      this._toast('Sensors saved!');
-      await this._loadAll();
-    } catch (e) {
-      this._toast('Error: ' + (e.message || e));
+    const state = this._hass && this._hass.states[entityId];
+    if (!state || state.state === 'unavailable' || state.state === 'unknown') {
+      el.innerHTML = `<span style="color:var(--danger);font-size:0.85em;">&#9888; ${this._esc(entityId)} unavailable</span>`;
+      return;
     }
-  }
-
-  async discoverSensors() {
-    const entry = this._config[this._currentEntryId];
-    const weatherEntity = this.$('weather-entity').value.trim() || (entry && entry.weather_entity);
-    if (!weatherEntity) { this._toast('Set a weather entity first'); return; }
-    try {
-      const discovered = await this._ws('hydrobalance/discover_sensors', { weather_entity: weatherEntity });
-      // Merge over existing so we don't wipe the soil-moisture sensor (which
-      // discovery doesn't return) or any manual overrides for unfound keys.
-      const merged = { ...((entry && entry.sensors) || {}) };
-      for (const [k, v] of Object.entries(discovered)) {
-        if (v) merged[k] = v;
-      }
-      await this._ws('hydrobalance/config/save', { entry_id: this._currentEntryId, sensors: merged });
-      this._toast('Sensors re-discovered!');
-      await this._loadAll();
-    } catch (e) {
-      this._toast('Error: ' + (e.message || e));
-    }
+    const a = state.attributes || {};
+    const fmt = (v, unit) => (v == null || v === '') ? '—' : `${v}${unit ? ' ' + unit : ''}`;
+    el.innerHTML = `
+      <div style="font-size:0.85em;">
+        <div style="margin-bottom:4px;"><strong>${this._esc(state.state)}</strong>
+          <span style="opacity:0.7;margin-left:6px;">${this._esc(a.friendly_name || entityId)}</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;">
+          <span>Temp: <strong>${fmt(a.temperature, '°C')}</strong></span>
+          <span>Humidity: <strong>${fmt(a.humidity, '%')}</strong></span>
+          <span>Wind: <strong>${fmt(a.wind_speed, 'km/h')}</strong></span>
+          <span>UV: <strong>${fmt(a.uv_index)}</strong></span>
+          <span>Pressure: <strong>${fmt(a.pressure, 'hPa')}</strong></span>
+          <span>Cloud: <strong>${fmt(a.cloud_coverage, '%')}</strong></span>
+        </div>
+      </div>`;
   }
 
   async forceWater(zoneId) {

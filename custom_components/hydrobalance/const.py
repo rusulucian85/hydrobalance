@@ -119,6 +119,9 @@ SOLAR_RADIATION_WEIGHTS = {
 
 CONF_SYSTEM_NAME = "system_name"
 CONF_WEATHER_ENTITY = "weather_entity"
+CONF_WEATHER_PRIMARY = "weather_primary"
+CONF_WEATHER_SECONDARY = "weather_secondary"
+CONF_ZONE_LOCAL_SENSORS = "local_sensors"
 
 CONF_SENSOR_TEMPERATURE = "sensor_temperature"
 CONF_SENSOR_TEMPERATURE_MIN = "sensor_temperature_min"
