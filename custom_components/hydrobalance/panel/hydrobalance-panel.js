@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.11.1 &mdash; Smart Irrigation</div>
+        <div class="version">v0.11.2 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -157,6 +157,11 @@ const TEMPLATE = `
     </div>
 
     <div id="tab-dashboard">
+      <div class="card hidden" id="sensor-health-card" style="border-left:4px solid var(--danger);">
+        <h2 id="sensor-health-title" style="margin:0 0 4px;font-size:1.05em;">&#9888; Sensors offline</h2>
+        <div id="sensor-health-body" style="font-size:0.85em;color:var(--text-secondary);"></div>
+      </div>
+
       <div class="card">
         <h2>Today's Data</h2>
         <div class="status-grid">
@@ -535,10 +540,47 @@ class HydroBalancePanel extends HTMLElement {
   }
 
   // ─── Rendering ──────────────────────────────────────────────────────────
+  _renderSensorHealth(health) {
+    const card = this.$('sensor-health-card');
+    const title = this.$('sensor-health-title');
+    const body = this.$('sensor-health-body');
+    const offline = health.filter(h => !h.available);
+    const degraded = health.filter(h => h.available && h.source === 'fallback');
+
+    if (offline.length === 0 && degraded.length === 0) {
+      card.classList.add('hidden');
+      return;
+    }
+    card.classList.remove('hidden');
+
+    let html = '';
+    if (offline.length > 0) {
+      card.style.borderLeftColor = 'var(--danger)';
+      title.innerHTML = `&#9888; ${offline.length} sensor${offline.length > 1 ? 's' : ''} offline &mdash; values may be stale`;
+      html += offline.map(h => {
+        const where = h.primary && h.fallback ? 'primary &amp; fallback both unavailable'
+          : h.primary ? `primary <code>${this._esc(h.primary)}</code> unavailable`
+          : `fallback <code>${this._esc(h.fallback)}</code> unavailable`;
+        return `<div><strong>${this._esc(h.label)}:</strong> ${where}</div>`;
+      }).join('');
+    } else {
+      card.style.borderLeftColor = 'var(--warning)';
+      title.innerHTML = `&#9432; Using fallback for ${degraded.length} sensor${degraded.length > 1 ? 's' : ''}`;
+    }
+    if (degraded.length > 0) {
+      html += degraded.map(h =>
+        `<div style="opacity:0.85;"><strong>${this._esc(h.label)}:</strong> primary down, using fallback <code>${this._esc(h.fallback)}</code></div>`
+      ).join('');
+    }
+    body.innerHTML = html;
+  }
+
   _renderDashboard() {
     if (!this._currentEntryId || !this._status[this._currentEntryId]) return;
     const s = this._status[this._currentEntryId];
     const daily = s.daily || {};
+
+    this._renderSensorHealth(s.sensor_health || []);
 
     this.$('stat-et').textContent = daily.et != null ? daily.et : '--';
     this.$('stat-rain').textContent = daily.rain_accumulated != null ? daily.rain_accumulated : '--';

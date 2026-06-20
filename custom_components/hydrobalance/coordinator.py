@@ -367,6 +367,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "rain_delay_until": self._rain_delay_until,
                 "rain_delay_active": self.rain_delay_active,
             },
+            "sensor_health": self._sensor_health(),
         }
 
     # ─── Sensor Reading ───────────────────────────────────────────────────────
@@ -404,6 +405,52 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 config_key, primary, fallback,
             )
         return value
+
+    # Configured sensor keys + human labels, in the order we want them surfaced.
+    _SENSOR_LABELS = (
+        (CONF_SENSOR_TEMPERATURE, "Temperature"),
+        (CONF_SENSOR_TEMPERATURE_MIN, "Forecast Min (frost)"),
+        (CONF_SENSOR_HUMIDITY, "Humidity"),
+        (CONF_SENSOR_WIND_SPEED, "Wind speed"),
+        (CONF_SENSOR_UV_INDEX, "UV index"),
+        (CONF_SENSOR_RAIN, "Rain"),
+        (CONF_SENSOR_RAIN_FORECAST, "Rain forecast"),
+        (CONF_SENSOR_SOIL_MOISTURE, "Soil moisture"),
+    )
+
+    def _sensor_health(self) -> list[dict[str, Any]]:
+        """Per-configured-sensor status so the panel can surface offline sources.
+
+        Each entry says which entity is mapped as primary/fallback, whether
+        either is currently available, and which one (if any) is supplying the
+        value right now.
+        """
+        sensors = self._store_data.get("sensors", {})
+        sensors_fallback = self._store_data.get("sensors_fallback", {})
+        health: list[dict[str, Any]] = []
+        for key, label in self._SENSOR_LABELS:
+            primary = sensors.get(key) or self.config.get(key)
+            fallback = sensors_fallback.get(key)
+            if not primary and not fallback:
+                continue  # nothing mapped → don't report
+            primary_val = self._read_entity(primary)
+            fallback_val = self._read_entity(fallback)
+            source: str | None = None
+            if primary_val is not None:
+                source = "primary"
+            elif fallback_val is not None:
+                source = "fallback"
+            health.append({
+                "key": key,
+                "label": label,
+                "primary": primary,
+                "fallback": fallback,
+                "primary_available": primary_val is not None,
+                "fallback_available": fallback_val is not None,
+                "source": source,
+                "available": source is not None,
+            })
+        return health
 
     def _zone_field_capacity(self, zone: dict[str, Any]) -> float:
         """Max plant-available water (mm) for this zone's soil — caps the deficit."""
