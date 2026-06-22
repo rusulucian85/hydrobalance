@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.13.0 &mdash; Smart Irrigation</div>
+        <div class="version">v0.13.1 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -1164,6 +1164,8 @@ class HydroBalancePanel extends HTMLElement {
     }
     const a = state.attributes || {};
     const fmt = (v, unit) => (v == null || v === '') ? '—' : `${v}${unit ? ' ' + unit : ''}`;
+    const rainNowId = `${previewId}-rain-now`;
+    const rain24hId = `${previewId}-rain-24h`;
     el.innerHTML = `
       <div style="font-size:0.85em;">
         <div style="margin-bottom:4px;"><strong>${this._esc(state.state)}</strong>
@@ -1175,8 +1177,32 @@ class HydroBalancePanel extends HTMLElement {
           <span>UV: <strong>${fmt(a.uv_index)}</strong></span>
           <span>Pressure: <strong>${fmt(a.pressure, 'hPa')}</strong></span>
           <span>Cloud: <strong>${fmt(a.cloud_coverage, '%')}</strong></span>
+          <span title="Current precipitation reported on the weather entity (when supported by the integration).">Rain now: <strong id="${rainNowId}">${fmt(a.precipitation, 'mm/h')}</strong></span>
+          <span title="Sum of next 24h precipitation from the daily forecast — what the rain-forecast skip checks against.">Rain 24h: <strong id="${rain24hId}">…</strong></span>
         </div>
       </div>`;
+    // Fetch forecast asynchronously and patch the rain-24h cell when it arrives.
+    this._fillForecastRain(entityId, rain24hId);
+  }
+
+  async _fillForecastRain(entityId, targetElId) {
+    let mm = null;
+    try {
+      const r = await this._hass.callService(
+        'weather', 'get_forecasts',
+        { entity_id: entityId, type: 'daily' },
+        undefined, true, true,
+      );
+      const fc = ((r && r.response) || {})[entityId];
+      const list = (fc && fc.forecast) || [];
+      if (list.length > 0) {
+        const p = list[0].precipitation;
+        if (p != null) mm = Number(p);
+      }
+    } catch (_) { /* leave as — */ }
+    const el = this.$(targetElId);
+    if (!el) return;
+    el.textContent = mm == null || isNaN(mm) ? '—' : `${mm.toFixed(1)} mm`;
   }
 
   async forceWater(zoneId) {
