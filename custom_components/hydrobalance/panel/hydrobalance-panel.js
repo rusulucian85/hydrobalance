@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.13.1 &mdash; Smart Irrigation</div>
+        <div class="version">v0.13.2 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -604,7 +604,14 @@ class HydroBalancePanel extends HTMLElement {
 
     this.$('stat-et').textContent = daily.et != null ? daily.et : '--';
     this.$('stat-rain').textContent = daily.rain_accumulated != null ? daily.rain_accumulated : '--';
-    this.$('stat-effrain').textContent = daily.effective_rain != null ? daily.effective_rain : '--';
+    // Eff. Rain shows the live projection (what would be applied to deficits
+    // if 23:00 ran right now) so heavy rain is reflected immediately. The
+    // committed value goes back to being shown after the rain accumulator
+    // resets at midnight.
+    const effLive = daily.effective_rain_live;
+    const effCommitted = daily.effective_rain;
+    const effDisplay = (effLive != null && effLive > 0) ? effLive : (effCommitted != null ? effCommitted : '--');
+    this.$('stat-effrain').textContent = effDisplay;
     this.$('stat-tmin').textContent = daily.tmin != null ? daily.tmin.toFixed(1) : '--';
     this.$('stat-tmax').textContent = daily.tmax != null ? daily.tmax.toFixed(1) : '--';
     this.$('stat-uv').textContent = daily.peak_uv != null ? daily.peak_uv.toFixed(1) : '--';
@@ -671,10 +678,23 @@ class HydroBalancePanel extends HTMLElement {
         }
       }
 
+      // Badge prefers the live deficit when it disagrees with the committed
+      // one — e.g. heavy rain pours after 23:00's calc, committed still shows
+      // "Needs Water" but live drops to saturated. Show "Saturated" instead of
+      // a misleading red badge.
+      const liveDef = zdata.water_deficit_live;
       let badgeClass = 'badge-ok', badgeText = 'OK';
       if (manualActive) { badgeClass = 'badge-active'; badgeText = 'Manual'; }
       else if (zoneStatus === 'watering') { badgeClass = 'badge-active'; badgeText = 'Watering'; }
-      else if (zoneStatus === 'needs_water') { badgeClass = 'badge-danger'; badgeText = 'Needs Water'; }
+      else if (liveDef != null && liveDef < 0) { badgeClass = 'badge-ok'; badgeText = 'Saturated'; }
+      else if (zoneStatus === 'needs_water') {
+        if (liveDef != null && liveDef <= threshold) {
+          // Committed says dry but live caught up (rain since last calc).
+          badgeClass = 'badge-warning'; badgeText = 'Pending recalc';
+        } else {
+          badgeClass = 'badge-danger'; badgeText = 'Needs Water';
+        }
+      }
       else if (deficit > threshold * 0.7) { badgeClass = 'badge-warning'; badgeText = 'Building'; }
 
       const pct = Math.min(100, Math.max(0, (deficit / threshold) * 100));

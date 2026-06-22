@@ -387,6 +387,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "rain_accumulated": round(self._daily_rain, 1),
                 "et": self._last_et,
                 "effective_rain": self._last_effective_rain,
+                "effective_rain_live": round(
+                    self.calculate_effective_rain(self._daily_rain, self.soil_type), 2
+                ),
                 "last_calc_date": self._last_calc_date,
             },
             "zones": {
