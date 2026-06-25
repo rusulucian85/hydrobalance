@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.14.1 &mdash; Smart Irrigation</div>
+        <div class="version">v0.14.2 &mdash; Smart Irrigation</div>
       </div>
       <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development">&#9829; Support</button>
     </div>
@@ -155,8 +155,7 @@ const TEMPLATE = `
           a coffee keeps the late-night commits coming.
         </p>
         <div style="display:flex;flex-direction:column;gap:10px;">
-          <a class="btn btn-primary" href="https://github.com/sponsors/rusulucian85" target="_blank" rel="noopener">GitHub Sponsors</a>
-          <a class="btn btn-outline" href="https://www.buymeacoffee.com/rusulucian85" target="_blank" rel="noopener">Buy Me a Coffee &#9749;</a>
+          <a class="btn btn-primary" href="https://www.buymeacoffee.com/rusulucian85" target="_blank" rel="noopener">Buy Me a Coffee &#9749;</a>
           <a class="btn btn-outline" href="https://revolut.me/lucian448" target="_blank" rel="noopener">Revolut</a>
         </div>
         <div style="margin-top:16px;">

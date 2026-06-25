@@ -1,0 +1,166 @@
+title: Garden
+path: garden
+icon: mdi:sprinkler-variant
+cards:
+  # ─── Status banner (templated) ──────────────────────────────────────────
+  - type: markdown
+    content: >
+      {% set en = is_state('switch.my_garden_automatic_watering', 'on') %}
+      {% set f = is_state('binary_sensor.my_garden_front_needs_water', 'on') %}
+      {% set m = is_state('binary_sensor.my_garden_mid_needs_water', 'on') %}
+      {% set b = is_state('binary_sensor.my_garden_back_needs_water', 'on') %}
+      {% set any_needs = f or m or b %}
+      {% set due = [] %}
+      {% if f %}{% set due = due + ['Front'] %}{% endif %}
+      {% if m %}{% set due = due + ['Mid'] %}{% endif %}
+      {% if b %}{% set due = due + ['Back'] %}{% endif %}
+      ## {% if not en %}🚫 Watering Disabled
+      {% elif any_needs %}💧 Scheduled — {{ due | join(', ') }}
+      {% else %}✅ All zones OK{% endif %}
+
+
+      {% if en and any_needs %}Next run: ~1h before sunrise tomorrow.{% endif %}
+
+  # ─── Master enable ──────────────────────────────────────────────────────
+  - type: entities
+    title: System
+    entities:
+      - entity: switch.my_garden_automatic_watering
+        name: Automatic Watering
+        icon: mdi:power
+
+  # ─── Soil moisture gauge ────────────────────────────────────────────────
+  - type: gauge
+    entity: sensor.garden_sensor_soil_moisture
+    name: Soil Moisture (%)
+    min: 0
+    max: 100
+    needle: true
+    severity:
+      red: 0
+      yellow: 25
+      green: 40
+
+  # ─── Zone deficits — gauge + details per zone ───────────────────────────
+  - type: vertical-stack
+    cards:
+      - type: gauge
+        entity: sensor.my_garden_front_water_deficit
+        name: Front deficit (mm)
+        min: 0
+        max: 20
+        needle: true
+        severity:
+          green: 0
+          yellow: 8
+          red: 12
+      - type: entities
+        entities:
+          - entity: sensor.my_garden_front_status
+            name: Status
+            icon: mdi:grass
+          - entity: sensor.my_garden_front_sun_exposure
+            name: Sun coefficient
+            icon: mdi:white-balance-sunny
+          - entity: sensor.my_garden_front_water_used
+            name: Used today
+            icon: mdi:water
+          - entity: sensor.my_garden_front_last_watered
+            name: Last watered
+          - type: section
+          - entity: switch.my_garden_front_sprinkler
+            name: Manual water — Front
+
+      - type: gauge
+        entity: sensor.my_garden_mid_water_deficit
+        name: Mid deficit (mm)
+        min: 0
+        max: 20
+        needle: true
+        severity:
+          green: 0
+          yellow: 8
+          red: 12
+      - type: entities
+        entities:
+          - entity: sensor.my_garden_mid_status
+            name: Status
+            icon: mdi:grass
+          - entity: sensor.my_garden_mid_sun_exposure
+            name: Sun coefficient
+            icon: mdi:white-balance-sunny
+          - entity: sensor.my_garden_mid_water_used
+            name: Used today
+            icon: mdi:water
+          - entity: sensor.my_garden_mid_last_watered
+            name: Last watered
+          - type: section
+          - entity: switch.my_garden_mid_sprinkler
+            name: Manual water — Mid
+
+      - type: gauge
+        entity: sensor.my_garden_back_water_deficit
+        name: Back deficit (mm)
+        min: 0
+        max: 20
+        needle: true
+        severity:
+          green: 0
+          yellow: 8
+          red: 12
+      - type: entities
+        entities:
+          - entity: sensor.my_garden_back_status
+            name: Status
+            icon: mdi:grass
+          - entity: sensor.my_garden_back_sun_exposure
+            name: Sun coefficient
+            icon: mdi:white-balance-sunny
+          - entity: sensor.my_garden_back_water_used
+            name: Used today
+            icon: mdi:water
+          - entity: sensor.my_garden_back_last_watered
+            name: Last watered
+          - type: section
+          - entity: switch.my_garden_back_sprinkler
+            name: Manual water — Back
+
+  # ─── Weather ────────────────────────────────────────────────────────────
+  - type: weather-forecast
+    entity: weather.openweathermap
+    forecast_type: daily
+    show_current: true
+    show_forecast: true
+
+  # ─── Today's irrigation totals ──────────────────────────────────────────
+  - type: entities
+    title: Today
+    entities:
+      - entity: sensor.my_garden_daily_et
+        name: ET (mm)
+        icon: mdi:weather-sunny-alert
+      - entity: sensor.my_garden_effective_rain
+        name: Effective rain (mm)
+        icon: mdi:weather-rainy
+      - entity: sensor.my_garden_rain_today
+        name: Rain so far (mm)
+        icon: mdi:weather-pouring
+      - type: section
+      - entity: sensor.openweathermap_temperature
+        name: Temperature
+      - entity: sensor.openweathermap_humidity
+        name: Humidity
+      - entity: sensor.openweathermap_wind_speed
+        name: Wind
+      - entity: sensor.openweathermap_uv_index
+        name: UV index
+
+  # ─── Watering history ──────────────────────────────────────────────────
+  - type: logbook
+    title: Watering history (7d)
+    hours_to_show: 168
+    entities:
+      - switch.sprinkler_front
+      - switch.sprinkler_mid
+      - switch.sprinkler_back
+      - switch.my_garden_automatic_watering
