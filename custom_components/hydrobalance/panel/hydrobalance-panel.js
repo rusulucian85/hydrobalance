@@ -142,7 +142,26 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.14.0 &mdash; Smart Irrigation</div>
+        <div class="version">v0.14.1 &mdash; Smart Irrigation</div>
+      </div>
+      <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development">&#9829; Support</button>
+    </div>
+
+    <div id="support-modal" class="modal-overlay hidden" onclick="window.__hb._supportBackdrop(event)">
+      <div class="modal" style="max-width:380px;text-align:center;">
+        <h2 style="margin:0 0 8px;">&#9829; Thanks for considering!</h2>
+        <p style="font-size:0.9em;color:var(--text-secondary);margin:0 0 18px;">
+          HydroBalance is free &amp; open source. If it saves your lawn (or your water bill),
+          a coffee keeps the late-night commits coming.
+        </p>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <a class="btn btn-primary" href="https://github.com/sponsors/rusulucian85" target="_blank" rel="noopener">GitHub Sponsors</a>
+          <a class="btn btn-outline" href="https://www.buymeacoffee.com/rusulucian85" target="_blank" rel="noopener">Buy Me a Coffee &#9749;</a>
+          <a class="btn btn-outline" href="https://revolut.me/lucian448" target="_blank" rel="noopener">Revolut</a>
+        </div>
+        <div style="margin-top:16px;">
+          <button class="btn btn-outline btn-sm" onclick="window.__hb.closeSupportModal()">Close</button>
+        </div>
       </div>
     </div>
 
@@ -1454,6 +1473,12 @@ class HydroBalancePanel extends HTMLElement {
   closeManualModal() { this.$('manual-modal').classList.add('hidden'); }
   _manualBackdrop(event) {
     if (event.target === this.$('manual-modal')) this.closeManualModal();
+  }
+
+  openSupportModal() { this.$('support-modal').classList.remove('hidden'); }
+  closeSupportModal() { this.$('support-modal').classList.add('hidden'); }
+  _supportBackdrop(event) {
+    if (event.target === this.$('support-modal')) this.closeSupportModal();
   }
 
   async startManualPreset(minutes) {
