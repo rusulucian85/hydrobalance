@@ -446,13 +446,31 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
 
     def _read_weather_attr(self, weather_entity: str | None, attr: str) -> float | None:
-        """Read a numeric attribute from a weather entity's state."""
+        """Read a numeric attribute from a weather entity's state.
+
+        For ``uv_index`` (which most weather integrations expose as a sibling
+        sensor rather than an entity attribute) we also try the common alias
+        names and, as a last resort, a derived ``sensor.{stem}_uv_index``
+        following the OWM/Met.no naming convention.
+        """
         if not weather_entity:
             return None
         state = self.hass.states.get(weather_entity)
         if state is None or state.state in ("unknown", "unavailable"):
             return None
         val = state.attributes.get(attr)
+        if val is None and attr == "uv_index":
+            # Some integrations use uvi/uv as the attribute name
+            for alias in ("uvi", "uv"):
+                val = state.attributes.get(alias)
+                if val is not None:
+                    break
+            if val is None:
+                # Last resort: a sibling sensor named after the weather entity
+                stem = weather_entity.split(".", 1)[1] if "." in weather_entity else weather_entity
+                sibling = self.hass.states.get(f"sensor.{stem}_uv_index")
+                if sibling is not None and sibling.state not in ("unknown", "unavailable"):
+                    val = sibling.state
         try:
             return float(val)
         except (TypeError, ValueError):

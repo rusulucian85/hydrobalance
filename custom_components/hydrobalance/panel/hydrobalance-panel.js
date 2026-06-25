@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.13.2 &mdash; Smart Irrigation</div>
+        <div class="version">v0.13.3 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -1184,6 +1184,17 @@ class HydroBalancePanel extends HTMLElement {
     }
     const a = state.attributes || {};
     const fmt = (v, unit) => (v == null || v === '') ? '—' : `${v}${unit ? ' ' + unit : ''}`;
+    // UV is rarely on the weather entity itself — try attribute aliases, then
+    // fall back to a sibling sensor named after the weather entity (works for
+    // OpenWeatherMap, Met.no and similar integrations).
+    let uv = a.uv_index ?? a.uvi ?? a.uv;
+    if (uv == null && entityId.includes('.')) {
+      const stem = entityId.split('.', 2)[1];
+      const sibling = this._hass.states[`sensor.${stem}_uv_index`];
+      if (sibling && sibling.state !== 'unavailable' && sibling.state !== 'unknown') {
+        uv = sibling.state;
+      }
+    }
     const rainNowId = `${previewId}-rain-now`;
     const rain24hId = `${previewId}-rain-24h`;
     el.innerHTML = `
@@ -1194,7 +1205,7 @@ class HydroBalancePanel extends HTMLElement {
           <span>Temp: <strong>${fmt(a.temperature, '°C')}</strong></span>
           <span>Humidity: <strong>${fmt(a.humidity, '%')}</strong></span>
           <span>Wind: <strong>${fmt(a.wind_speed, 'km/h')}</strong></span>
-          <span>UV: <strong>${fmt(a.uv_index)}</strong></span>
+          <span>UV: <strong>${fmt(uv)}</strong></span>
           <span>Pressure: <strong>${fmt(a.pressure, 'hPa')}</strong></span>
           <span>Cloud: <strong>${fmt(a.cloud_coverage, '%')}</strong></span>
           <span title="Current precipitation reported on the weather entity (when supported by the integration).">Rain now: <strong id="${rainNowId}">${fmt(a.precipitation, 'mm/h')}</strong></span>
