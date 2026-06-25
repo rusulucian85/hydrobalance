@@ -291,7 +291,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.15.0 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
+        <div class="version">v0.15.1 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
       </div>
       <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development" data-i18n="header.support_btn">&#9829; Support</button>
     </div>
@@ -1441,14 +1441,16 @@ class HydroBalancePanel extends HTMLElement {
   }
 
   // ─── Weather provider picker ─────────────────────────────────────────────
-  // Top 5 most-used weather integrations in HA. Detected from the live
-  // `attribution` attribute, so however the user named their weather entity
-  // we still recognise the provider.
+  // Top 5 most-used weather integrations in HA. Detected first from the
+  // entity registry (most reliable — uses the integration's domain), then by
+  // attribution as fallback for HA versions where hass.entities isn't exposed
+  // to custom panels.
   get _PROVIDERS() {
     return {
       openweathermap: {
         name: 'OpenWeatherMap',
         attribution: 'openweathermap',
+        platform: 'openweathermap',
         free: 'Free 1000 calls/day',
         steps: [
           'Sign up at <a href="https://home.openweathermap.org/users/sign_up" target="_blank" rel="noopener">openweathermap.org</a> (free)',
@@ -1460,6 +1462,7 @@ class HydroBalancePanel extends HTMLElement {
       pirateweather: {
         name: 'Pirate Weather',
         attribution: 'pirate weather',
+        platform: 'pirateweather',
         free: 'Free 10,000 calls/month',
         steps: [
           'Sign up at <a href="https://pirateweather.net" target="_blank" rel="noopener">pirateweather.net</a> (Dark Sky successor)',
@@ -1471,6 +1474,7 @@ class HydroBalancePanel extends HTMLElement {
       met: {
         name: 'Met.no (Norway)',
         attribution: 'met.no',
+        platform: 'met',
         free: 'Completely free, no API key needed',
         steps: [
           'No account required',
@@ -1481,6 +1485,7 @@ class HydroBalancePanel extends HTMLElement {
       openmeteo: {
         name: 'Open-Meteo',
         attribution: 'open-meteo',
+        platform: 'openmeteo',
         free: 'Completely free, no API key, no signup',
         steps: [
           'No account required',
@@ -1491,6 +1496,7 @@ class HydroBalancePanel extends HTMLElement {
       accuweather: {
         name: 'AccuWeather',
         attribution: 'accuweather',
+        platform: 'accuweather',
         free: 'Free 50 calls/day',
         steps: [
           'Sign up at <a href="https://developer.accuweather.com" target="_blank" rel="noopener">developer.accuweather.com</a>',
@@ -1502,19 +1508,40 @@ class HydroBalancePanel extends HTMLElement {
     };
   }
 
+  _norm(s) { return String(s || '').toLowerCase().replace(/[_\-\s.]/g, ''); }
+
   _detectProviders() {
     // Returns { providerKey: entityId } for every recognised weather entity.
+    // First pass: entity registry by integration platform (catches providers
+    // that don't expose an `attribution` attribute, like Open-Meteo).
+    // Second pass: attribution attribute, as a fallback / cross-check.
     const found = {};
-    if (!this._hass || !this._hass.states) return found;
+    if (!this._hass) return found;
     const providers = this._PROVIDERS;
-    for (const [id, st] of Object.entries(this._hass.states)) {
+
+    const entities = this._hass.entities || {};
+    for (const [id, ent] of Object.entries(entities)) {
       if (!id.startsWith('weather.')) continue;
-      const attr = ((st.attributes || {}).attribution || '').toLowerCase();
-      if (!attr) continue;
+      const plat = this._norm(ent && ent.platform);
+      if (!plat) continue;
       for (const [key, p] of Object.entries(providers)) {
-        if (!(key in found) && attr.includes(p.attribution)) {
+        if (!(key in found) && plat.includes(this._norm(p.platform))) {
           found[key] = id;
           break;
+        }
+      }
+    }
+
+    if (this._hass.states) {
+      for (const [id, st] of Object.entries(this._hass.states)) {
+        if (!id.startsWith('weather.')) continue;
+        const attr = ((st.attributes || {}).attribution || '').toLowerCase();
+        if (!attr) continue;
+        for (const [key, p] of Object.entries(providers)) {
+          if (!(key in found) && attr.includes(p.attribution)) {
+            found[key] = id;
+            break;
+          }
         }
       }
     }
