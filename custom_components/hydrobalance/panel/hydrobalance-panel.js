@@ -2,6 +2,155 @@
 // frontend context so we get an authenticated `hass` object directly (no
 // WebSocket auth dance, works inside the iOS app's WKWebView).
 
+// ─── i18n catalog ──────────────────────────────────────────────────────────
+// Keys are namespaced "section.key". English is the source of truth and the
+// fallback for any missing translation. Add a new language by copying the
+// `en` block, translating the values, and the panel picks it up automatically
+// based on the user's HA locale (`hass.locale.language`).
+const I18N = {
+  en: {
+    common: { close: 'Close', cancel: 'Cancel', save: 'Save', delete: 'Delete', loading: 'Loading…' },
+    tabs: { dashboard: 'Dashboard', zones: 'Zones', settings: 'Settings' },
+    header: { tagline: 'Smart Irrigation', support_btn: '♥ Support' },
+    badges: {
+      ok: 'OK', needs_water: 'Needs Water', saturated: 'Saturated',
+      building: 'Building', watering: 'Watering', manual: 'Manual',
+      pending_recalc: 'Pending recalc', soil_wet: 'Soil wet',
+    },
+    dashboard: {
+      todays_data: "Today's Data",
+      et: 'ET (mm)', rain: 'Rain (mm)', eff_rain: 'Eff. Rain (mm)',
+      tmin: 'T min (°C)', tmax: 'T max (°C)', peak_uv: 'Peak UV',
+      soil_moisture: 'Soil Moisture',
+      zone_status: 'Zone Status',
+      no_zones: 'No zones configured yet.',
+      go_to_zones: 'Go to Zones tab to add watering zones.',
+      recent_activity: 'Recent Activity',
+      system: 'System',
+      manual_water: 'Manual Water', stop_manual: 'Stop Manual',
+      skip_next: 'Skip Next Watering', force_all: 'Force Water All',
+      reset_all: 'Reset All Deficits',
+    },
+    settings: {
+      weather_channels: 'Weather Channels',
+      weather_intro: 'ET is calculated from the Primary weather channel. If it goes unavailable, values are read from the Secondary.',
+      primary: 'Primary Weather Channel',
+      secondary: 'Secondary Weather Channel',
+      secondary_hint: '(optional fallback)',
+      skip_rain: 'Skip watering when rain is forecast',
+      save_weather: 'Save Weather Channels',
+      soil_moisture_title: 'Soil Moisture Sensor',
+      soil_moisture_intro: 'System-wide fallback. Used for zones without a local soil-moisture sensor. When measured moisture is above the threshold, ET is frozen and watering is skipped.',
+      use_soil_moisture: 'Use soil-moisture sensor (off = pure ET model)',
+      sensor_entity: 'Sensor Entity',
+      threshold: 'Skip Threshold (% VWC)',
+      save_soil: 'Save Soil Moisture',
+      soil_strategy: 'Soil & Strategy',
+      soil_type: 'Soil Type', strategy: 'Strategy',
+    },
+    support: {
+      title: '♥ Thanks for considering!',
+      body: 'HydroBalance is free & open source. A small tip keeps the late-night commits coming.',
+      qr_hint: 'Scan with your phone — opens any banking app that supports payment links.',
+    },
+    health: { offline: 'sensor offline', stale_warn: 'values may be stale' },
+  },
+  ro: {
+    common: { close: 'Închide', cancel: 'Anulează', save: 'Salvează', delete: 'Șterge', loading: 'Se încarcă…' },
+    tabs: { dashboard: 'Tablou', zones: 'Zone', settings: 'Setări' },
+    header: { tagline: 'Irigare Inteligentă', support_btn: '♥ Susține' },
+    badges: {
+      ok: 'OK', needs_water: 'Necesită apă', saturated: 'Saturat',
+      building: 'Crește', watering: 'Udare în curs', manual: 'Manual',
+      pending_recalc: 'Recalc. în așteptare', soil_wet: 'Sol ud',
+    },
+    dashboard: {
+      todays_data: 'Date azi',
+      et: 'ET (mm)', rain: 'Ploaie (mm)', eff_rain: 'Ploaie ef. (mm)',
+      tmin: 'T min (°C)', tmax: 'T max (°C)', peak_uv: 'UV maxim',
+      soil_moisture: 'Umiditate sol',
+      zone_status: 'Stare zone',
+      no_zones: 'Nicio zonă configurată.',
+      go_to_zones: 'Adaugă o zonă din tab-ul Zone.',
+      recent_activity: 'Activitate recentă',
+      system: 'Sistem',
+      manual_water: 'Udare manuală', stop_manual: 'Oprește manual',
+      skip_next: 'Sări peste următoarea udare', force_all: 'Forțează udarea tuturor',
+      reset_all: 'Resetează toate deficitele',
+    },
+    settings: {
+      weather_channels: 'Canale meteo',
+      weather_intro: 'ET-ul se calculează din canalul Primar. Dacă pică, se citește din Secundar.',
+      primary: 'Canal meteo primar',
+      secondary: 'Canal meteo secundar',
+      secondary_hint: '(rezervă opțională)',
+      skip_rain: 'Sări peste udare când e prognozată ploaie',
+      save_weather: 'Salvează canalele meteo',
+      soil_moisture_title: 'Senzor umiditate sol',
+      soil_moisture_intro: 'Rezervă la nivel de sistem. Folosit pentru zonele fără senzor local. Când umiditatea măsurată depășește pragul, ET-ul îngheață și udarea se sare.',
+      use_soil_moisture: 'Folosește senzor de sol (off = model ET pur)',
+      sensor_entity: 'Entitate senzor',
+      threshold: 'Prag (% VWC)',
+      save_soil: 'Salvează umiditatea solului',
+      soil_strategy: 'Sol & Strategie',
+      soil_type: 'Tip sol', strategy: 'Strategie',
+    },
+    support: {
+      title: '♥ Mulțumesc pentru gândul bun!',
+      body: 'HydroBalance e gratuit și open-source. Un mic tip ajută la commits de noapte.',
+      qr_hint: 'Scanează cu telefonul — deschide orice aplicație bancară cu plăți rapide.',
+    },
+    health: { offline: 'senzor offline', stale_warn: 'valorile pot fi vechi' },
+  },
+  de: {
+    common: { close: 'Schließen', cancel: 'Abbrechen', save: 'Speichern', delete: 'Löschen', loading: 'Lädt…' },
+    tabs: { dashboard: 'Übersicht', zones: 'Zonen', settings: 'Einstellungen' },
+    header: { tagline: 'Smarte Bewässerung', support_btn: '♥ Unterstützen' },
+    badges: {
+      ok: 'OK', needs_water: 'Wasser nötig', saturated: 'Gesättigt',
+      building: 'Steigt', watering: 'Bewässert', manual: 'Manuell',
+      pending_recalc: 'Neuberechnung steht aus', soil_wet: 'Boden nass',
+    },
+    dashboard: {
+      todays_data: 'Heutige Daten',
+      et: 'ET (mm)', rain: 'Regen (mm)', eff_rain: 'Eff. Regen (mm)',
+      tmin: 'T min (°C)', tmax: 'T max (°C)', peak_uv: 'UV max',
+      soil_moisture: 'Bodenfeuchte',
+      zone_status: 'Zonenstatus',
+      no_zones: 'Noch keine Zonen konfiguriert.',
+      go_to_zones: 'Im Tab Zonen eine Bewässerungszone hinzufügen.',
+      recent_activity: 'Letzte Aktivität',
+      system: 'System',
+      manual_water: 'Manuell bewässern', stop_manual: 'Manuell stoppen',
+      skip_next: 'Nächste Bewässerung überspringen', force_all: 'Alle Zonen jetzt bewässern',
+      reset_all: 'Alle Defizite zurücksetzen',
+    },
+    settings: {
+      weather_channels: 'Wetterkanäle',
+      weather_intro: 'Die ET wird aus dem Primärkanal berechnet. Wenn er nicht verfügbar ist, werden Werte aus dem Sekundärkanal gelesen.',
+      primary: 'Primärer Wetterkanal',
+      secondary: 'Sekundärer Wetterkanal',
+      secondary_hint: '(optionaler Fallback)',
+      skip_rain: 'Bewässerung überspringen, wenn Regen erwartet wird',
+      save_weather: 'Wetterkanäle speichern',
+      soil_moisture_title: 'Bodenfeuchtesensor',
+      soil_moisture_intro: 'Systemweiter Fallback. Wird für Zonen ohne lokalen Bodenfeuchtesensor verwendet. Übersteigt die gemessene Feuchte den Schwellwert, wird die ET eingefroren und die Bewässerung übersprungen.',
+      use_soil_moisture: 'Bodenfeuchtesensor verwenden (aus = reines ET-Modell)',
+      sensor_entity: 'Sensor-Entität',
+      threshold: 'Schwellwert (% VWC)',
+      save_soil: 'Bodenfeuchte speichern',
+      soil_strategy: 'Boden & Strategie',
+      soil_type: 'Bodentyp', strategy: 'Strategie',
+    },
+    support: {
+      title: '♥ Danke für die Überlegung!',
+      body: 'HydroBalance ist kostenlos & Open Source. Ein kleiner Tipp hält die nächtlichen Commits am Laufen.',
+      qr_hint: 'Mit dem Handy scannen — öffnet jede Banking-App, die Zahlungs-Links unterstützt.',
+    },
+    health: { offline: 'Sensor offline', stale_warn: 'Werte sind möglicherweise veraltet' },
+  },
+};
+
 const STYLES = `
   :host {
     display: block;
@@ -142,24 +291,22 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.14.2 &mdash; Smart Irrigation</div>
+        <div class="version">v0.15.0 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
       </div>
-      <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development">&#9829; Support</button>
+      <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development" data-i18n="header.support_btn">&#9829; Support</button>
     </div>
 
     <div id="support-modal" class="modal-overlay hidden" onclick="window.__hb._supportBackdrop(event)">
-      <div class="modal" style="max-width:380px;text-align:center;">
-        <h2 style="margin:0 0 8px;">&#9829; Thanks for considering!</h2>
-        <p style="font-size:0.9em;color:var(--text-secondary);margin:0 0 18px;">
-          HydroBalance is free &amp; open source. If it saves your lawn (or your water bill),
-          a coffee keeps the late-night commits coming.
-        </p>
-        <div style="display:flex;flex-direction:column;gap:10px;">
-          <a class="btn btn-primary" href="https://www.buymeacoffee.com/rusulucian85" target="_blank" rel="noopener">Buy Me a Coffee &#9749;</a>
-          <a class="btn btn-outline" href="https://revolut.me/lucian448" target="_blank" rel="noopener">Revolut</a>
+      <div class="modal" style="max-width:340px;text-align:center;">
+        <h2 style="margin:0 0 8px;" data-i18n="support.title">&#9829; Thanks for considering!</h2>
+        <p style="font-size:0.9em;color:var(--text-secondary);margin:0 0 14px;" data-i18n="support.body">HydroBalance is free &amp; open source. A small tip keeps the late-night commits coming.</p>
+        <a class="btn btn-primary" href="https://revolut.me/lucian448" target="_blank" rel="noopener" style="display:block;margin-bottom:12px;">Revolut &mdash; lucian448</a>
+        <div style="background:white;padding:10px;border-radius:8px;display:inline-block;">
+          <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&amp;data=https%3A%2F%2Frevolut.me%2Flucian448" alt="Revolut QR" width="180" height="180" style="display:block;" />
         </div>
-        <div style="margin-top:16px;">
-          <button class="btn btn-outline btn-sm" onclick="window.__hb.closeSupportModal()">Close</button>
+        <p style="font-size:0.75em;color:var(--text-secondary);margin:8px 0 0;" data-i18n="support.qr_hint">Scan with your phone &mdash; opens any banking app that supports payment links.</p>
+        <div style="margin-top:14px;">
+          <button class="btn btn-outline btn-sm" onclick="window.__hb.closeSupportModal()" data-i18n="common.close">Close</button>
         </div>
       </div>
     </div>
@@ -169,9 +316,9 @@ const TEMPLATE = `
     <datalist id="dl-weather"></datalist>
 
     <div class="tabs">
-      <button class="tab active" data-tab="dashboard" onclick="window.__hb.showTab('dashboard')">Dashboard</button>
-      <button class="tab" data-tab="zones" onclick="window.__hb.showTab('zones')">Zones</button>
-      <button class="tab" data-tab="settings" onclick="window.__hb.showTab('settings')">Settings</button>
+      <button class="tab active" data-tab="dashboard" onclick="window.__hb.showTab('dashboard')" data-i18n="tabs.dashboard">Dashboard</button>
+      <button class="tab" data-tab="zones" onclick="window.__hb.showTab('zones')" data-i18n="tabs.zones">Zones</button>
+      <button class="tab" data-tab="settings" onclick="window.__hb.showTab('settings')" data-i18n="tabs.settings">Settings</button>
     </div>
 
     <div id="tab-dashboard">
@@ -181,19 +328,19 @@ const TEMPLATE = `
       </div>
 
       <div class="card">
-        <h2>Today's Data</h2>
+        <h2 data-i18n="dashboard.todays_data">Today's Data</h2>
         <div class="status-grid">
-          <div class="stat-box"><div class="value" id="stat-et">--</div><div class="label">ET (mm)</div></div>
-          <div class="stat-box"><div class="value" id="stat-rain">--</div><div class="label">Rain (mm)</div></div>
-          <div class="stat-box"><div class="value" id="stat-effrain">--</div><div class="label">Eff. Rain (mm)</div></div>
-          <div class="stat-box"><div class="value" id="stat-tmin">--</div><div class="label">T min (&deg;C)</div></div>
-          <div class="stat-box"><div class="value" id="stat-tmax">--</div><div class="label">T max (&deg;C)</div></div>
-          <div class="stat-box"><div class="value" id="stat-uv">--</div><div class="label">Peak UV</div></div>
+          <div class="stat-box"><div class="value" id="stat-et">--</div><div class="label" data-i18n="dashboard.et">ET (mm)</div></div>
+          <div class="stat-box"><div class="value" id="stat-rain">--</div><div class="label" data-i18n="dashboard.rain">Rain (mm)</div></div>
+          <div class="stat-box"><div class="value" id="stat-effrain">--</div><div class="label" data-i18n="dashboard.eff_rain">Eff. Rain (mm)</div></div>
+          <div class="stat-box"><div class="value" id="stat-tmin">--</div><div class="label" data-i18n="dashboard.tmin">T min (&deg;C)</div></div>
+          <div class="stat-box"><div class="value" id="stat-tmax">--</div><div class="label" data-i18n="dashboard.tmax">T max (&deg;C)</div></div>
+          <div class="stat-box"><div class="value" id="stat-uv">--</div><div class="label" data-i18n="dashboard.peak_uv">Peak UV</div></div>
         </div>
       </div>
 
       <div class="card hidden" id="soil-moisture-card">
-        <h2>Soil Moisture</h2>
+        <h2 data-i18n="dashboard.soil_moisture">Soil Moisture</h2>
         <div style="display:flex;justify-content:space-between;align-items:baseline;">
           <span id="soil-moisture-value" style="font-size:1.6em;font-weight:700;">--</span>
           <span id="soil-moisture-meta" style="font-size:0.85em;color:var(--text-secondary);"></span>
@@ -201,17 +348,17 @@ const TEMPLATE = `
       </div>
 
       <div class="card">
-        <h2>Zone Status</h2>
-        <div id="zone-status-list"><div class="loading">Loading...</div></div>
+        <h2 data-i18n="dashboard.zone_status">Zone Status</h2>
+        <div id="zone-status-list"><div class="loading" data-i18n="common.loading">Loading...</div></div>
       </div>
 
       <div class="card">
-        <h2>Recent Activity</h2>
+        <h2 data-i18n="dashboard.recent_activity">Recent Activity</h2>
         <div id="activity-list"><div class="empty-state"><p>No activity yet.</p></div></div>
       </div>
 
       <div class="card">
-        <h2>System</h2>
+        <h2 data-i18n="dashboard.system">System</h2>
         <div id="system-status" style="margin-bottom:12px;"></div>
         <div class="actions">
           <button class="btn btn-outline" id="enable-toggle-btn" onclick="window.__hb.toggleEnabled()">Disable Watering</button>
@@ -224,9 +371,9 @@ const TEMPLATE = `
       <div class="card">
         <h2>Actions</h2>
         <div class="actions">
-          <button class="btn btn-warning" onclick="window.__hb.skipDay()">Skip Next Watering</button>
-          <button class="btn btn-primary" onclick="window.__hb.forceWater()">Force Water All</button>
-          <button class="btn btn-outline" onclick="window.__hb.resetDeficit()">Reset All Deficits</button>
+          <button class="btn btn-warning" onclick="window.__hb.skipDay()" data-i18n="dashboard.skip_next">Skip Next Watering</button>
+          <button class="btn btn-primary" onclick="window.__hb.forceWater()" data-i18n="dashboard.force_all">Force Water All</button>
+          <button class="btn btn-outline" onclick="window.__hb.resetDeficit()" data-i18n="dashboard.reset_all">Reset All Deficits</button>
         </div>
       </div>
     </div>
@@ -245,21 +392,20 @@ const TEMPLATE = `
 
     <div id="tab-settings" class="hidden">
       <div class="card">
-        <h2>Weather Channels</h2>
-        <p style="font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;">
-          ET is calculated from the <strong>Primary</strong> weather channel. If it goes unavailable,
-          values are read from the <strong>Secondary</strong>. Each channel is a <code>weather.*</code>
-          entity — no per-sensor mapping needed.
+        <h2 data-i18n="settings.weather_channels">Weather Channels</h2>
+        <p style="font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;" data-i18n="settings.weather_intro">
+          ET is calculated from the Primary weather channel. If it goes unavailable,
+          values are read from the Secondary.
         </p>
         <div class="form-group">
-          <label>Primary Weather Channel</label>
+          <label data-i18n="settings.primary">Primary Weather Channel</label>
           <select id="weather-primary-picker" onchange="window.__hb._onWeatherPickerChange('primary')" style="margin-bottom:6px;"></select>
           <input type="text" id="weather-primary" list="dl-weather" placeholder="weather.openweathermap" autocapitalize="off" autocomplete="off" oninput="window.__hb._refreshWeatherPreview('primary')">
           <div id="weather-primary-setup" class="hidden" style="margin-top:6px;padding:10px 12px;border-radius:8px;background:rgba(255,165,0,0.08);border-left:3px solid var(--warning, #e65100);font-size:0.85em;"></div>
           <div id="weather-primary-preview" style="margin-top:6px;padding:8px 10px;border-radius:8px;background:rgba(0,0,0,0.04);"></div>
         </div>
         <div class="form-group">
-          <label>Secondary Weather Channel <span style="opacity:0.6;font-weight:normal;">(optional fallback)</span></label>
+          <label><span data-i18n="settings.secondary">Secondary Weather Channel</span> <span style="opacity:0.6;font-weight:normal;" data-i18n="settings.secondary_hint">(optional fallback)</span></label>
           <select id="weather-secondary-picker" onchange="window.__hb._onWeatherPickerChange('secondary')" style="margin-bottom:6px;"></select>
           <input type="text" id="weather-secondary" list="dl-weather" placeholder="weather.pirateweather" autocapitalize="off" autocomplete="off" oninput="window.__hb._refreshWeatherPreview('secondary')">
           <div id="weather-secondary-setup" class="hidden" style="margin-top:6px;padding:10px 12px;border-radius:8px;background:rgba(255,165,0,0.08);border-left:3px solid var(--warning, #e65100);font-size:0.85em;"></div>
@@ -267,42 +413,42 @@ const TEMPLATE = `
         </div>
         <div class="form-group" style="display:flex;align-items:center;gap:8px;">
           <input type="checkbox" id="use-forecast" style="width:auto;">
-          <label for="use-forecast" style="margin:0;">Skip watering when rain is forecast</label>
+          <label for="use-forecast" style="margin:0;" data-i18n="settings.skip_rain">Skip watering when rain is forecast</label>
         </div>
         <div class="actions">
-          <button class="btn btn-primary" onclick="window.__hb.saveWeatherChannels()">Save Weather Channels</button>
+          <button class="btn btn-primary" onclick="window.__hb.saveWeatherChannels()" data-i18n="settings.save_weather">Save Weather Channels</button>
         </div>
       </div>
 
       <div class="card">
-        <h2>Soil Moisture Sensor</h2>
-        <p style="font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;">
+        <h2 data-i18n="settings.soil_moisture_title">Soil Moisture Sensor</h2>
+        <p style="font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;" data-i18n="settings.soil_moisture_intro">
           System-wide fallback. Used for zones that don't have their own local soil-moisture
           sensor (configured in the zone editor). When measured moisture is above the threshold,
-          ET is frozen and watering is skipped &mdash; real-sensor feedback overrides the ET estimate.
+          ET is frozen and watering is skipped.
         </p>
         <div class="form-group" style="display:flex;align-items:center;gap:8px;">
           <input type="checkbox" id="use-soil-moisture" style="width:auto;">
-          <label for="use-soil-moisture" style="margin:0;">Use soil-moisture sensor (off = pure ET model)</label>
+          <label for="use-soil-moisture" style="margin:0;" data-i18n="settings.use_soil_moisture">Use soil-moisture sensor (off = pure ET model)</label>
         </div>
         <div class="form-group">
-          <label>Sensor Entity</label>
+          <label data-i18n="settings.sensor_entity">Sensor Entity</label>
           <input type="text" id="soil-moisture-sensor" list="dl-sensors" placeholder="sensor.garden_sensor_soil_moisture" autocapitalize="off" autocomplete="off">
         </div>
         <div class="form-group">
-          <label>Skip Threshold (% VWC)</label>
+          <label data-i18n="settings.threshold">Skip Threshold (% VWC)</label>
           <input type="number" id="moisture-threshold" value="40" step="1" min="0" max="100">
         </div>
         <div class="actions">
-          <button class="btn btn-primary" onclick="window.__hb.saveMoistureConfig()">Save Soil Moisture</button>
+          <button class="btn btn-primary" onclick="window.__hb.saveMoistureConfig()" data-i18n="settings.save_soil">Save Soil Moisture</button>
         </div>
       </div>
 
       <div class="card">
-        <h2>Soil &amp; Strategy</h2>
+        <h2 data-i18n="settings.soil_strategy">Soil &amp; Strategy</h2>
         <div class="form-row">
           <div class="form-group">
-            <label>Soil Type</label>
+            <label data-i18n="settings.soil_type">Soil Type</label>
             <select id="soil-type">
               <option value="clay">Clay / Heavy Soil</option>
               <option value="loam">Loam</option>
@@ -497,6 +643,7 @@ class HydroBalancePanel extends HTMLElement {
     if (!this._rendered) {
       this._rendered = true;
       this.shadowRoot.innerHTML = `<style>${STYLES}</style>${TEMPLATE}`;
+      this._applyI18n();
       this._loadAll();
     }
   }
@@ -511,6 +658,40 @@ class HydroBalancePanel extends HTMLElement {
     const d = document.createElement('div');
     d.textContent = s || '';
     return d.innerHTML;
+  }
+
+  // ─── i18n ───────────────────────────────────────────────────────────────
+  _lang() {
+    const code = (this._hass && this._hass.locale && this._hass.locale.language) || 'en';
+    const base = String(code).toLowerCase().split('-')[0];
+    return I18N[base] ? base : 'en';
+  }
+
+  t(key, vars = {}) {
+    const lookup = (lang) => {
+      let v = I18N[lang];
+      for (const p of key.split('.')) {
+        if (v && typeof v === 'object') v = v[p];
+        else return undefined;
+      }
+      return v;
+    };
+    let val = lookup(this._lang());
+    if (val === undefined) val = lookup('en');
+    if (typeof val !== 'string') return key;  // missing → show key for debugging
+    return val.replace(/\{(\w+)\}/g, (_, n) => (vars[n] != null ? String(vars[n]) : `{${n}}`));
+  }
+
+  _applyI18n() {
+    // Walk the shadow DOM and replace text content of any element with a
+    // data-i18n="namespace.key" attribute. Re-runnable; called after the
+    // template is mounted and whenever the locale changes.
+    const nodes = this.shadowRoot.querySelectorAll('[data-i18n]');
+    nodes.forEach(el => {
+      const key = el.getAttribute('data-i18n');
+      if (!key) return;
+      el.textContent = this.t(key);
+    });
   }
 
   _fmtMinutes(min) {
@@ -705,19 +886,18 @@ class HydroBalancePanel extends HTMLElement {
       // "Needs Water" but live drops to saturated. Show "Saturated" instead of
       // a misleading red badge.
       const liveDef = zdata.water_deficit_live;
-      let badgeClass = 'badge-ok', badgeText = 'OK';
-      if (manualActive) { badgeClass = 'badge-active'; badgeText = 'Manual'; }
-      else if (zoneStatus === 'watering') { badgeClass = 'badge-active'; badgeText = 'Watering'; }
-      else if (liveDef != null && liveDef < 0) { badgeClass = 'badge-ok'; badgeText = 'Saturated'; }
+      let badgeClass = 'badge-ok', badgeText = this.t('badges.ok');
+      if (manualActive) { badgeClass = 'badge-active'; badgeText = this.t('badges.manual'); }
+      else if (zoneStatus === 'watering') { badgeClass = 'badge-active'; badgeText = this.t('badges.watering'); }
+      else if (liveDef != null && liveDef < 0) { badgeClass = 'badge-ok'; badgeText = this.t('badges.saturated'); }
       else if (zoneStatus === 'needs_water') {
         if (liveDef != null && liveDef <= threshold) {
-          // Committed says dry but live caught up (rain since last calc).
-          badgeClass = 'badge-warning'; badgeText = 'Pending recalc';
+          badgeClass = 'badge-warning'; badgeText = this.t('badges.pending_recalc');
         } else {
-          badgeClass = 'badge-danger'; badgeText = 'Needs Water';
+          badgeClass = 'badge-danger'; badgeText = this.t('badges.needs_water');
         }
       }
-      else if (deficit > threshold * 0.7) { badgeClass = 'badge-warning'; badgeText = 'Building'; }
+      else if (deficit > threshold * 0.7) { badgeClass = 'badge-warning'; badgeText = this.t('badges.building'); }
 
       const pct = Math.min(100, Math.max(0, (deficit / threshold) * 100));
       const barColor = pct > 80 ? 'var(--danger)' : pct > 50 ? 'var(--warning)' : 'var(--success)';
@@ -732,7 +912,7 @@ class HydroBalancePanel extends HTMLElement {
           <div class="zone-header">
             <span class="zone-name">${this._esc(zoneName)}</span>
             <span>
-              ${wetSoil ? '<span class="badge badge-ok" title="Soil moisture above threshold — ET frozen, only rain adjusts the deficit">Soil wet</span> ' : ''}
+              ${wetSoil ? `<span class="badge badge-ok" title="Soil moisture above threshold — ET frozen, only rain adjusts the deficit">${this.t('badges.soil_wet')}</span> ` : ''}
               <span class="badge ${badgeClass}">${badgeText}</span>
             </span>
           </div>

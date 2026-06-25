@@ -151,11 +151,71 @@ def draw_logo(width: int, height: int) -> Image.Image:
     return img
 
 
+def _white_to_alpha(img: Image.Image, threshold: int = 240) -> Image.Image:
+    """Convert near-white pixels to transparent. RGB→RGBA helper."""
+    img = img.convert("RGBA")
+    px = img.load()
+    w, h = img.size
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            if r >= threshold and g >= threshold and b >= threshold:
+                px[x, y] = (255, 255, 255, 0)
+    return img
+
+
+def from_source(path: str, sizes: list[int], logo_widths: list[tuple[int, int]]) -> None:
+    """Use a user-supplied source image instead of the generated one."""
+    src = Image.open(path)
+    src = _white_to_alpha(src)
+    for sz in sizes:
+        out = src.resize((sz, sz), Image.LANCZOS)
+        name = "icon.png" if sz == sizes[0] else f"icon@{sz // sizes[0]}x.png"
+        out.save(os.path.join(OUT, name))
+        print(f"  {name}: {sz}x{sz}")
+    # Logo = source icon on the left + wordmark
+    for w, h in logo_widths:
+        bg = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        icon = src.resize((h, h), Image.LANCZOS)
+        bg.paste(icon, (0, 0), icon)
+        draw = ImageDraw.Draw(bg)
+        font = None
+        for cand in [
+            "C:/Windows/Fonts/segoeuib.ttf",
+            "C:/Windows/Fonts/SegoeUI.ttf",
+            "C:/Windows/Fonts/segoeui.ttf",
+            "C:/Windows/Fonts/Arial.ttf",
+        ]:
+            if os.path.exists(cand):
+                try:
+                    font = ImageFont.truetype(cand, int(h * 0.48))
+                    break
+                except Exception:
+                    pass
+        if font is None:
+            font = ImageFont.load_default()
+        text = "HydroBalance"
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_h = bbox[3] - bbox[1]
+        x = h + int(h * 0.08)
+        y = (h - text_h) // 2 - bbox[1]
+        draw.text((x, y), text, fill=TEXT, font=font)
+        name = "logo.png" if h == logo_widths[0][1] else f"logo@{h // logo_widths[0][1]}x.png"
+        bg.save(os.path.join(OUT, name))
+        print(f"  {name}: {w}x{h}")
+
+
 def main():
-    draw_icon(256).save(os.path.join(OUT, "icon.png"))
-    draw_icon(512).save(os.path.join(OUT, "icon@2x.png"))
-    draw_logo(700, 256).save(os.path.join(OUT, "logo.png"))
-    draw_logo(1400, 512).save(os.path.join(OUT, "logo@2x.png"))
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] not in ("--generated", "-g"):
+        # Use a source image: `py make_icon.py <path.png>`
+        print(f"Using source image: {sys.argv[1]}")
+        from_source(sys.argv[1], sizes=[256, 512], logo_widths=[(700, 256), (1400, 512)])
+    else:
+        draw_icon(256).save(os.path.join(OUT, "icon.png"))
+        draw_icon(512).save(os.path.join(OUT, "icon@2x.png"))
+        draw_logo(700, 256).save(os.path.join(OUT, "logo.png"))
+        draw_logo(1400, 512).save(os.path.join(OUT, "logo@2x.png"))
     print("Wrote brand/ assets.")
 
 

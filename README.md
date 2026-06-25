@@ -3,7 +3,7 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/v/release/rusulucian85/hydrobalance)](https://github.com/rusulucian85/hydrobalance/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy_Me_a_Coffee-FFDD00?logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/rusulucian85)
+[![Tip via Revolut](https://img.shields.io/badge/Tip-Revolut-0075EB?logo=revolut)](https://revolut.me/lucian448)
 
 **ET-based smart irrigation for Home Assistant.**
 
