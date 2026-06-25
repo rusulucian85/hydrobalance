@@ -142,7 +142,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.13.3 &mdash; Smart Irrigation</div>
+        <div class="version">v0.14.0 &mdash; Smart Irrigation</div>
       </div>
     </div>
 
@@ -235,12 +235,16 @@ const TEMPLATE = `
         </p>
         <div class="form-group">
           <label>Primary Weather Channel</label>
+          <select id="weather-primary-picker" onchange="window.__hb._onWeatherPickerChange('primary')" style="margin-bottom:6px;"></select>
           <input type="text" id="weather-primary" list="dl-weather" placeholder="weather.openweathermap" autocapitalize="off" autocomplete="off" oninput="window.__hb._refreshWeatherPreview('primary')">
+          <div id="weather-primary-setup" class="hidden" style="margin-top:6px;padding:10px 12px;border-radius:8px;background:rgba(255,165,0,0.08);border-left:3px solid var(--warning, #e65100);font-size:0.85em;"></div>
           <div id="weather-primary-preview" style="margin-top:6px;padding:8px 10px;border-radius:8px;background:rgba(0,0,0,0.04);"></div>
         </div>
         <div class="form-group">
           <label>Secondary Weather Channel <span style="opacity:0.6;font-weight:normal;">(optional fallback)</span></label>
+          <select id="weather-secondary-picker" onchange="window.__hb._onWeatherPickerChange('secondary')" style="margin-bottom:6px;"></select>
           <input type="text" id="weather-secondary" list="dl-weather" placeholder="weather.pirateweather" autocapitalize="off" autocomplete="off" oninput="window.__hb._refreshWeatherPreview('secondary')">
+          <div id="weather-secondary-setup" class="hidden" style="margin-top:6px;padding:10px 12px;border-radius:8px;background:rgba(255,165,0,0.08);border-left:3px solid var(--warning, #e65100);font-size:0.85em;"></div>
           <div id="weather-secondary-preview" style="margin-top:6px;padding:8px 10px;border-radius:8px;background:rgba(0,0,0,0.04);"></div>
         </div>
         <div class="form-group" style="display:flex;align-items:center;gap:8px;">
@@ -908,6 +912,8 @@ class HydroBalancePanel extends HTMLElement {
     this.$('weather-secondary').value = (entry && entry.weather_secondary) || '';
     this.$('use-forecast').checked = !(entry && entry.use_forecast === false);
     this._populatePicker('dl-weather', 'weather');
+    this._populateProviderPicker('primary');
+    this._populateProviderPicker('secondary');
     this._refreshWeatherPreview('primary');
     this._refreshWeatherPreview('secondary');
 
@@ -1234,6 +1240,163 @@ class HydroBalancePanel extends HTMLElement {
     const el = this.$(targetElId);
     if (!el) return;
     el.textContent = mm == null || isNaN(mm) ? '—' : `${mm.toFixed(1)} mm`;
+  }
+
+  // ─── Weather provider picker ─────────────────────────────────────────────
+  // Top 5 most-used weather integrations in HA. Detected from the live
+  // `attribution` attribute, so however the user named their weather entity
+  // we still recognise the provider.
+  get _PROVIDERS() {
+    return {
+      openweathermap: {
+        name: 'OpenWeatherMap',
+        attribution: 'openweathermap',
+        free: 'Free 1000 calls/day',
+        steps: [
+          'Sign up at <a href="https://home.openweathermap.org/users/sign_up" target="_blank" rel="noopener">openweathermap.org</a> (free)',
+          'Get your API key from <em>API keys</em> tab (takes ~2h to activate)',
+          'HA: Settings → Devices & Services → Add Integration → <strong>OpenWeatherMap</strong>',
+          'Paste the API key and save',
+        ],
+      },
+      pirateweather: {
+        name: 'Pirate Weather',
+        attribution: 'pirate weather',
+        free: 'Free 10,000 calls/month',
+        steps: [
+          'Sign up at <a href="https://pirateweather.net" target="_blank" rel="noopener">pirateweather.net</a> (Dark Sky successor)',
+          'Get API key from your account dashboard',
+          'HA: Settings → Devices & Services → Add → <strong>Pirate Weather</strong>',
+          'Paste API key, save',
+        ],
+      },
+      met: {
+        name: 'Met.no (Norway)',
+        attribution: 'met.no',
+        free: 'Completely free, no API key needed',
+        steps: [
+          'No account required',
+          'HA: Settings → Devices & Services → Add Integration → <strong>Met.no</strong>',
+          'Save (uses your HA location automatically)',
+        ],
+      },
+      openmeteo: {
+        name: 'Open-Meteo',
+        attribution: 'open-meteo',
+        free: 'Completely free, no API key, no signup',
+        steps: [
+          'No account required',
+          'HA: Settings → Devices & Services → Add Integration → <strong>Open-Meteo</strong>',
+          'Save (uses your HA location)',
+        ],
+      },
+      accuweather: {
+        name: 'AccuWeather',
+        attribution: 'accuweather',
+        free: 'Free 50 calls/day',
+        steps: [
+          'Sign up at <a href="https://developer.accuweather.com" target="_blank" rel="noopener">developer.accuweather.com</a>',
+          'Create an app, get API key',
+          'HA: Settings → Devices & Services → Add Integration → <strong>AccuWeather</strong>',
+          'Paste API key, save',
+        ],
+      },
+    };
+  }
+
+  _detectProviders() {
+    // Returns { providerKey: entityId } for every recognised weather entity.
+    const found = {};
+    if (!this._hass || !this._hass.states) return found;
+    const providers = this._PROVIDERS;
+    for (const [id, st] of Object.entries(this._hass.states)) {
+      if (!id.startsWith('weather.')) continue;
+      const attr = ((st.attributes || {}).attribution || '').toLowerCase();
+      if (!attr) continue;
+      for (const [key, p] of Object.entries(providers)) {
+        if (!(key in found) && attr.includes(p.attribution)) {
+          found[key] = id;
+          break;
+        }
+      }
+    }
+    return found;
+  }
+
+  _populateProviderPicker(which) {
+    const picker = this.$(`weather-${which}-picker`);
+    if (!picker) return;
+    const detected = this._detectProviders();
+    const currentValue = this.$(`weather-${which}`).value.trim();
+    const providers = this._PROVIDERS;
+
+    let html = '<option value="">— pick a provider —</option>';
+
+    const configured = Object.keys(detected);
+    if (configured.length > 0) {
+      html += '<optgroup label="Configured on this HA">';
+      for (const key of configured) {
+        const eid = detected[key];
+        const selected = currentValue === eid ? ' selected' : '';
+        html += `<option value="entity:${this._esc(eid)}"${selected}>${this._esc(providers[key].name)} — <code>${this._esc(eid)}</code></option>`;
+      }
+      html += '</optgroup>';
+    }
+
+    const notConfigured = Object.keys(providers).filter(k => !(k in detected));
+    if (notConfigured.length > 0) {
+      html += '<optgroup label="Available providers (need setup)">';
+      for (const key of notConfigured) {
+        html += `<option value="setup:${key}">${this._esc(providers[key].name)} — ${this._esc(providers[key].free)}</option>`;
+      }
+      html += '</optgroup>';
+    }
+
+    // If current value doesn't match any detected provider, mark it as custom
+    const matchesDetected = configured.some(k => detected[k] === currentValue);
+    const selectedCustom = currentValue && !matchesDetected ? ' selected' : '';
+    html += `<option value="custom"${selectedCustom}>Custom entity ID${currentValue && !matchesDetected ? ` (${this._esc(currentValue)})` : ''}…</option>`;
+
+    picker.innerHTML = html;
+  }
+
+  _onWeatherPickerChange(which) {
+    const picker = this.$(`weather-${which}-picker`);
+    const input = this.$(`weather-${which}`);
+    const setupEl = this.$(`weather-${which}-setup`);
+    const val = picker.value;
+
+    if (!val) {
+      setupEl.classList.add('hidden');
+      return;
+    }
+    if (val === 'custom') {
+      setupEl.classList.add('hidden');
+      input.focus();
+      return;
+    }
+    if (val.startsWith('entity:')) {
+      const entityId = val.slice(7);
+      input.value = entityId;
+      setupEl.classList.add('hidden');
+      this._refreshWeatherPreview(which);
+      return;
+    }
+    if (val.startsWith('setup:')) {
+      const key = val.slice(6);
+      const p = this._PROVIDERS[key];
+      if (!p) return;
+      setupEl.classList.remove('hidden');
+      setupEl.innerHTML = `
+        <div style="font-weight:600;margin-bottom:6px;">Set up ${this._esc(p.name)}</div>
+        <div style="opacity:0.85;margin-bottom:8px;">${this._esc(p.free)}</div>
+        <ol style="margin:0;padding-left:20px;">
+          ${p.steps.map(s => `<li style="margin-bottom:4px;">${s}</li>`).join('')}
+        </ol>
+        <p style="margin-top:8px;opacity:0.7;">After adding it in HA, return here — the provider will appear under "Configured" in the dropdown.</p>`;
+      // Don't change the input value when picking a setup-only option
+      this._refreshWeatherPreview(which);
+    }
   }
 
   async forceWater(zoneId) {
