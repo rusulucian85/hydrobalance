@@ -291,7 +291,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.15.1 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
+        <div class="version">v0.15.2 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
       </div>
       <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development" data-i18n="header.support_btn">&#9829; Support</button>
     </div>
@@ -1452,6 +1452,8 @@ class HydroBalancePanel extends HTMLElement {
         attribution: 'openweathermap',
         platform: 'openweathermap',
         free: 'Free 1000 calls/day',
+        // UV lives on a sibling sensor.openweathermap_uv_index, which we auto-pick.
+        limitation: null,
         steps: [
           'Sign up at <a href="https://home.openweathermap.org/users/sign_up" target="_blank" rel="noopener">openweathermap.org</a> (free)',
           'Get your API key from <em>API keys</em> tab (takes ~2h to activate)',
@@ -1464,6 +1466,7 @@ class HydroBalancePanel extends HTMLElement {
         attribution: 'pirate weather',
         platform: 'pirateweather',
         free: 'Free 10,000 calls/month',
+        limitation: 'No UV index exposed (neither as attribute nor sibling sensor) — ET falls back to peak UV from primary, or 0.',
         steps: [
           'Sign up at <a href="https://pirateweather.net" target="_blank" rel="noopener">pirateweather.net</a> (Dark Sky successor)',
           'Get API key from your account dashboard',
@@ -1476,6 +1479,8 @@ class HydroBalancePanel extends HTMLElement {
         attribution: 'met.no',
         platform: 'met',
         free: 'Completely free, no API key needed',
+        // Best attribute coverage of all — has UV index directly.
+        limitation: null,
         steps: [
           'No account required',
           'HA: Settings → Devices & Services → Add Integration → <strong>Met.no</strong>',
@@ -1487,6 +1492,7 @@ class HydroBalancePanel extends HTMLElement {
         attribution: 'open-meteo',
         platform: 'openmeteo',
         free: 'Completely free, no API key, no signup',
+        limitation: 'Limited integration — only temperature + wind on the weather entity. No humidity / UV / pressure / cloud. Best as fallback, not primary.',
         steps: [
           'No account required',
           'HA: Settings → Devices & Services → Add Integration → <strong>Open-Meteo</strong>',
@@ -1498,6 +1504,7 @@ class HydroBalancePanel extends HTMLElement {
         attribution: 'accuweather',
         platform: 'accuweather',
         free: 'Free 50 calls/day',
+        limitation: 'Free tier is only 50 calls/day — HydroBalance polls every 15 min (~96/day), so you may exhaust it. Use as secondary fallback only.',
         steps: [
           'Sign up at <a href="https://developer.accuweather.com" target="_blank" rel="noopener">developer.accuweather.com</a>',
           'Create an app, get API key',
@@ -1563,7 +1570,9 @@ class HydroBalancePanel extends HTMLElement {
       for (const key of configured) {
         const eid = detected[key];
         const selected = currentValue === eid ? ' selected' : '';
-        html += `<option value="entity:${this._esc(eid)}"${selected}>${this._esc(providers[key].name)} — <code>${this._esc(eid)}</code></option>`;
+        // ⚠ glyph in option label when the provider has known limitations
+        const flag = providers[key].limitation ? ' ⚠' : '';
+        html += `<option value="entity:${this._esc(eid)}"${selected}>${this._esc(providers[key].name)}${flag} — ${this._esc(eid)}</option>`;
       }
       html += '</optgroup>';
     }
@@ -1572,7 +1581,8 @@ class HydroBalancePanel extends HTMLElement {
     if (notConfigured.length > 0) {
       html += '<optgroup label="Available providers (need setup)">';
       for (const key of notConfigured) {
-        html += `<option value="setup:${key}">${this._esc(providers[key].name)} — ${this._esc(providers[key].free)}</option>`;
+        const flag = providers[key].limitation ? ' ⚠' : '';
+        html += `<option value="setup:${key}">${this._esc(providers[key].name)}${flag} — ${this._esc(providers[key].free)}</option>`;
       }
       html += '</optgroup>';
     }
@@ -1583,6 +1593,8 @@ class HydroBalancePanel extends HTMLElement {
     html += `<option value="custom"${selectedCustom}>Custom entity ID${currentValue && !matchesDetected ? ` (${this._esc(currentValue)})` : ''}…</option>`;
 
     picker.innerHTML = html;
+    // Render any disclaimer for the pre-selected option on initial load.
+    this._onWeatherPickerChange(which);
   }
 
   _onWeatherPickerChange(which) {
@@ -1603,7 +1615,18 @@ class HydroBalancePanel extends HTMLElement {
     if (val.startsWith('entity:')) {
       const entityId = val.slice(7);
       input.value = entityId;
-      setupEl.classList.add('hidden');
+      // Identify which provider was picked, surface any known limitation.
+      const detected = this._detectProviders();
+      const providerKey = Object.keys(detected).find(k => detected[k] === entityId);
+      const p = providerKey ? this._PROVIDERS[providerKey] : null;
+      if (p && p.limitation) {
+        setupEl.classList.remove('hidden');
+        setupEl.innerHTML = `
+          <div style="font-weight:600;margin-bottom:4px;">&#9888; Heads up about ${this._esc(p.name)}</div>
+          <div style="opacity:0.9;">${this._esc(p.limitation)}</div>`;
+      } else {
+        setupEl.classList.add('hidden');
+      }
       this._refreshWeatherPreview(which);
       return;
     }
@@ -1612,12 +1635,16 @@ class HydroBalancePanel extends HTMLElement {
       const p = this._PROVIDERS[key];
       if (!p) return;
       setupEl.classList.remove('hidden');
+      const limitationHtml = p.limitation
+        ? `<p style="margin:8px 0 0;color:var(--danger);">&#9888; ${this._esc(p.limitation)}</p>`
+        : '';
       setupEl.innerHTML = `
         <div style="font-weight:600;margin-bottom:6px;">Set up ${this._esc(p.name)}</div>
         <div style="opacity:0.85;margin-bottom:8px;">${this._esc(p.free)}</div>
         <ol style="margin:0;padding-left:20px;">
           ${p.steps.map(s => `<li style="margin-bottom:4px;">${s}</li>`).join('')}
         </ol>
+        ${limitationHtml}
         <p style="margin-top:8px;opacity:0.7;">After adding it in HA, return here — the provider will appear under "Configured" in the dropdown.</p>`;
       // Don't change the input value when picking a setup-only option
       this._refreshWeatherPreview(which);
