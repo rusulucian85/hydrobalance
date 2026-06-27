@@ -1222,7 +1222,11 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         mm_applied = (elapsed_min / 30) * sprinkler_rate
 
         current = self._zone_deficits.get(zone_id, 0.0)
-        new_deficit = max(0.0, current - mm_applied)
+        # Same floor as the auto path: clamp at DEFICIT_MIN, not 0. A flat-zero
+        # floor would erase a negative (saturated) deficit on any manual run,
+        # even a 0.1 mm sprinkler test — surprising the user. Real saturation
+        # from rain stays saturated.
+        new_deficit = max(DEFICIT_MIN, current - mm_applied)
         self._zone_deficits[zone_id] = round(new_deficit, 1)
 
         LOGGER.info(

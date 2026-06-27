@@ -66,8 +66,7 @@ The deficit is clamped on the dry side at the soil's **field capacity** — the 
 plant-available water that soil can actually hold (clay 30 mm, loam 20 mm, sandy 12 mm;
 see §5). A long dry spell or a multi-day skip therefore can't invent more "debt" than the
 soil could physically have lost, which prevents a giant catch-up overwater when watering
-resumes. The wet side is floored at **−20 mm**. (Manual watering uses a tighter floor of
-**0** — see §9.)
+resumes. The wet side is floored at **−20 mm** (for both ET model and manual watering).
 
 **1 mm of water = 1 litre per square metre.** All quantities in HydroBalance — ET, rain,
 deficit, sprinkler output — are in mm, which keeps the maths consistent regardless of
@@ -459,12 +458,14 @@ Each zone on the dashboard has a **Manual Water** toggle for on-demand watering:
 
 ```
 mm_applied  = (elapsed_minutes / 30) × sprinkler_rate
-new_deficit = max(0, current_deficit − mm_applied)
+new_deficit = max(−20, current_deficit − mm_applied)
 ```
 
-The deficit floor here is **0** (not −20): manual watering credits the soil but never
-drives the balance negative, so a long manual session doesn't suppress automatic watering
-for days afterwards.
+The deficit is clamped at **−20 mm** (same as the auto path). The intent of an older floor
+at 0 was to keep a long manual run from suppressing the auto schedule for days, but it
+also erased real negative deficits caused by rain — even a 0.1 mm sprinkler test on
+already-saturated soil reset the balance to 0. The current floor matches the physical
+reality: water that goes in actually counts.
 
 **Restart-safe:** if Home Assistant restarts mid-run, on startup HydroBalance finalises
 the interrupted run — it counts the elapsed time up to that point, credits the deficit,
