@@ -38,6 +38,18 @@ RAIN_FORECAST_SKIP = 5.0  # mm
 DEFICIT_MIN = -20.0
 DEFICIT_MAX = 60.0
 
+# ─── Watering Window ──────────────────────────────────────────────────────────
+# The start time is dynamic: computed once at the 23:00 daily calc so watering
+# always *finishes* by WATERING_TARGET_FINISH. Formula:
+#   start = max( min(target_finish − total_runtime, sunrise − 1h), earliest )
+# sunrise−1h is a "latest start" cap (never water in daylight); earliest is the
+# floor (never start before this, even if a lot of water is due).
+from datetime import time as _time  # noqa: E402
+
+WATERING_TARGET_FINISH = _time(7, 0)   # aim to have all zones done by 07:00
+WATERING_EARLIEST_START = _time(4, 30)  # never start before 04:30
+WATERING_SUNRISE_OFFSET_H = 1.0         # latest start = sunrise − this many hours
+
 # ─── Soil Types ───────────────────────────────────────────────────────────────
 # Effective precipitation coefficients per rain band: (0-2mm, 2-5mm, 5-15mm, >15mm)
 

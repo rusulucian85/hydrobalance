@@ -9,11 +9,17 @@ from datetime import datetime, timedelta, date
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import SUN_EVENT_SUNRISE
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_call_later, async_track_sunrise, async_track_time_change
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_point_in_time,
+    async_track_time_change,
+)
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.sun import get_astral_location
+from homeassistant.helpers.sun import get_location_astral_event_next
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+import homeassistant.util.dt as dt_util
 
 from . import calc
 from .const import (
@@ -69,6 +75,9 @@ from .const import (
     DEFAULT_DEFICIT_THRESHOLD,
     DEFAULT_MAX_PER_CYCLE,
     DEFAULT_MOISTURE_SKIP_THRESHOLD,
+    WATERING_TARGET_FINISH,
+    WATERING_EARLIEST_START,
+    WATERING_SUNRISE_OFFSET_H,
 )
 
 
@@ -90,6 +99,10 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass, STORAGE_VERSION, f"{STORAGE_KEY_PREFIX}.{entry.entry_id}"
         )
         self._unsub_daily: list = []
+        # One-shot cancel handle for the dynamically-scheduled watering start,
+        # plus the planned start (ISO) surfaced on the dashboard.
+        self._unsub_watering: Any = None
+        self._planned_start: str | None = None
         self._watering_queue: deque[str] = deque()
         self._watering_active = False
         self._watering_task: asyncio.Task | None = None
@@ -285,13 +298,12 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         )
 
-        # Watering check 1h before sunrise — coolest, lowest wind, so the
-        # least evaporation loss and foliage dries off during the day.
-        self._unsub_daily.append(
-            async_track_sunrise(
-                self.hass, self._async_watering_check, offset=timedelta(hours=-1)
-            )
-        )
+        # Watering start is scheduled dynamically (see _schedule_next_watering):
+        # the 23:00 calc computes how long all zones need and back-solves a
+        # start time so watering finishes by the target, capped at sunrise−1h
+        # and floored at the earliest allowed start. Schedule once now so a
+        # restart between 23:00 and the morning run doesn't drop the watering.
+        self._schedule_next_watering()
 
         # Finalize any manual watering interrupted by a restart: count the
         # elapsed time up to now, subtract from the deficit, and turn the
@@ -309,6 +321,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for unsub in self._unsub_daily:
             unsub()
         self._unsub_daily.clear()
+        if self._unsub_watering is not None:
+            self._unsub_watering()
+            self._unsub_watering = None
         if self._watering_task and not self._watering_task.done():
             self._watering_task.cancel()
         await self._persist()
@@ -427,6 +442,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "enabled": self._enabled,
                 "rain_delay_until": self._rain_delay_until,
                 "rain_delay_active": self.rain_delay_active,
+                "next_watering": self._planned_start,
+                "next_watering_minutes": round(self._estimate_total_runtime()),
             },
             "sensor_health": self._sensor_health(),
         }
@@ -902,10 +919,112 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
         self._last_calc_date = today_str
+        # Now that deficits are current, back-solve tomorrow morning's start so
+        # watering finishes by the target time.
+        self._schedule_next_watering()
         await self._persist()
         await self.async_request_refresh()
 
-    # ─── Watering Check (sunrise - 1h) ───────────────────────────────────────
+    # ─── Dynamic Start Scheduling ─────────────────────────────────────────────
+
+    def _estimate_zone_runtime(self, zone: dict[str, Any]) -> float:
+        """Minutes this zone would run at the next check, or 0 if it wouldn't.
+
+        Mirrors the queue-building + per-zone timing in the watering path so the
+        schedule can back-solve a start time. Soil-moisture skips aren't known
+        until check time, so this is an upper bound (worst case: start earlier).
+        """
+        zid = zone[CONF_ZONE_ID]
+        deficit = self._zone_deficits.get(zid, 0.0)
+        threshold = zone.get(
+            CONF_ZONE_DEFICIT_THRESHOLD, self.strategy["deficit_threshold"]
+        )
+        if deficit <= threshold:
+            return 0.0
+        max_per_cycle = zone.get(
+            CONF_ZONE_MAX_PER_CYCLE,
+            self.strategy.get("max_per_cycle", DEFAULT_MAX_PER_CYCLE),
+        )
+        mm_to_apply = min(deficit, max_per_cycle)
+        rate = zone.get(CONF_ZONE_SPRINKLER_RATE, DEFAULT_SPRINKLER_RATE)
+        total_minutes = max(1.0, (mm_to_apply / rate) * 30)
+
+        # Cycle & soak adds rest periods between pulses to the wall-clock time.
+        if zone.get(CONF_ZONE_CYCLE_SOAK):
+            pulse = max(1.0, zone.get(CONF_ZONE_PULSE_MINUTES, DEFAULT_PULSE_MINUTES))
+            soak = max(0.0, zone.get(CONF_ZONE_SOAK_MINUTES, DEFAULT_SOAK_MINUTES))
+            pulses = math.ceil(total_minutes / pulse)
+            total_minutes += max(0, pulses - 1) * soak
+        return total_minutes
+
+    def _estimate_total_runtime(self) -> float:
+        """Total wall-clock minutes to water every zone that's currently due."""
+        return sum(self._estimate_zone_runtime(z) for z in self.zones)
+
+    def _compute_planned_start(self) -> datetime | None:
+        """Aware datetime to start the morning run, or None if nothing is due.
+
+        start = max( min(target_finish − total_runtime, sunrise − 1h), earliest )
+        """
+        total_min = self._estimate_total_runtime()
+        if total_min <= 0:
+            return None
+
+        now = dt_util.now()
+        sunrise = dt_util.as_local(
+            get_location_astral_event_next(
+                self.hass, SUN_EVENT_SUNRISE, dt_util.utcnow()
+            )
+        )
+        # 07:00, 04:30 and sunrise all belong to the same morning — anchor the
+        # window to sunrise's local date so DST/tz stays consistent.
+        target_finish = sunrise.replace(
+            hour=WATERING_TARGET_FINISH.hour,
+            minute=WATERING_TARGET_FINISH.minute,
+            second=0,
+            microsecond=0,
+        )
+        earliest = sunrise.replace(
+            hour=WATERING_EARLIEST_START.hour,
+            minute=WATERING_EARLIEST_START.minute,
+            second=0,
+            microsecond=0,
+        )
+        latest = sunrise - timedelta(hours=WATERING_SUNRISE_OFFSET_H)
+
+        target_start = target_finish - timedelta(minutes=total_min)
+        planned = max(min(target_start, latest), earliest)
+
+        # If we're computing after the planned moment already passed (e.g. a
+        # restart mid-window), don't schedule in the past — run shortly from now.
+        if planned <= now:
+            planned = now + timedelta(seconds=30)
+        return planned
+
+    @callback
+    def _schedule_next_watering(self) -> None:
+        """(Re)schedule the one-shot morning watering start."""
+        if self._unsub_watering is not None:
+            self._unsub_watering()
+            self._unsub_watering = None
+
+        planned = self._compute_planned_start()
+        self._planned_start = planned.isoformat() if planned else None
+        if planned is None:
+            LOGGER.info("No watering scheduled — no zones above threshold")
+            return
+
+        self._unsub_watering = async_track_point_in_time(
+            self.hass, self._async_watering_check, planned
+        )
+        LOGGER.info(
+            "Next watering start scheduled for %s (est %.0f min, finish ~%s)",
+            planned.strftime("%Y-%m-%d %H:%M"),
+            self._estimate_total_runtime(),
+            (planned + timedelta(minutes=self._estimate_total_runtime())).strftime("%H:%M"),
+        )
+
+    # ─── Watering Check (dynamic start) ───────────────────────────────────────
 
     @property
     def rain_delay_active(self) -> bool:
@@ -916,6 +1035,12 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_watering_check(self, _now: datetime | None = None) -> None:
         """Check if any zones need watering."""
+        # The one-shot schedule has now fired; clear its stale state so the
+        # dashboard doesn't keep showing a past start time. The next start is
+        # recomputed at the 23:00 daily calc.
+        self._unsub_watering = None
+        self._planned_start = None
+
         if not self._enabled:
             LOGGER.info("Watering skipped (system disabled)")
             self._log_event("skipped", reason="disabled")

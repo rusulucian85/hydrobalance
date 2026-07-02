@@ -291,7 +291,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.15.4 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
+        <div class="version">v0.16.0 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
       </div>
       <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development" data-i18n="header.support_btn">&#9829; Support</button>
     </div>
@@ -961,7 +961,21 @@ class HydroBalancePanel extends HTMLElement {
     } else {
       msg = 'Automatic watering is active'; color = 'var(--success)';
     }
-    statusEl.innerHTML = `<span style="font-weight:600;color:${color};">${this._esc(msg)}</span>`;
+
+    // When active, show the dynamically-computed next start (and estimated
+    // finish). The start is back-solved at the 23:00 calc so watering ends by
+    // the target time; sunrise−1h caps it, an early floor guards the bottom.
+    let nextTxt = '';
+    if (enabled && !delayActive && sys.next_watering) {
+      const start = new Date(sys.next_watering);
+      const mins = Number(sys.next_watering_minutes) || 0;
+      const hhmm = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const finishTxt = mins > 0
+        ? ` → done ~${hhmm(new Date(start.getTime() + mins * 60000))}`
+        : '';
+      nextTxt = `<div style="margin-top:4px;font-size:0.85em;color:var(--text-secondary);">Next start: <strong>${this._esc(hhmm(start))}</strong>${finishTxt}</div>`;
+    }
+    statusEl.innerHTML = `<span style="font-weight:600;color:${color};">${this._esc(msg)}</span>${nextTxt}`;
 
     toggleBtn.textContent = enabled ? 'Disable Watering' : 'Enable Watering';
     toggleBtn.classList.toggle('btn-danger', enabled);
