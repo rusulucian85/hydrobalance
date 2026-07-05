@@ -45,6 +45,10 @@ const I18N = {
       sensor_entity: 'Sensor Entity',
       threshold: 'Skip Threshold (% VWC)',
       save_soil: 'Save Soil Moisture',
+      history_title: 'Activity History',
+      history_intro: 'How long to keep the Recent Activity log. Older entries are pruned automatically.',
+      history_retention: 'Keep history for (days)',
+      save_history: 'Save History Settings',
       soil_strategy: 'Soil & Strategy',
       soil_type: 'Soil Type', strategy: 'Strategy',
     },
@@ -92,6 +96,10 @@ const I18N = {
       sensor_entity: 'Entitate senzor',
       threshold: 'Prag (% VWC)',
       save_soil: 'Salvează umiditatea solului',
+      history_title: 'Istoric activitate',
+      history_intro: 'Cât timp se păstrează jurnalul de activitate recentă. Intrările mai vechi sunt șterse automat.',
+      history_retention: 'Păstrează istoricul (zile)',
+      save_history: 'Salvează setările istoricului',
       soil_strategy: 'Sol & Strategie',
       soil_type: 'Tip sol', strategy: 'Strategie',
     },
@@ -139,6 +147,10 @@ const I18N = {
       sensor_entity: 'Sensor-Entität',
       threshold: 'Schwellwert (% VWC)',
       save_soil: 'Bodenfeuchte speichern',
+      history_title: 'Aktivitätsverlauf',
+      history_intro: 'Wie lange das Aktivitätsprotokoll aufbewahrt wird. Ältere Einträge werden automatisch entfernt.',
+      history_retention: 'Verlauf aufbewahren (Tage)',
+      save_history: 'Verlaufseinstellungen speichern',
       soil_strategy: 'Boden & Strategie',
       soil_type: 'Bodentyp', strategy: 'Strategie',
     },
@@ -291,7 +303,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.16.0 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
+        <div class="version">v0.16.1 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
       </div>
       <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development" data-i18n="header.support_btn">&#9829; Support</button>
     </div>
@@ -467,6 +479,20 @@ const TEMPLATE = `
         </div>
         <div class="actions">
           <button class="btn btn-primary" onclick="window.__hb.saveSettings()">Save Settings</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 data-i18n="settings.history_title">Activity History</h2>
+        <p style="font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;" data-i18n="settings.history_intro">
+          How long to keep the Recent Activity log. Older entries are pruned automatically.
+        </p>
+        <div class="form-group">
+          <label data-i18n="settings.history_retention">Keep history for (days)</label>
+          <input type="number" id="history-retention" value="30" step="1" min="1" max="3650">
+        </div>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="window.__hb.saveHistoryConfig()" data-i18n="settings.save_history">Save History Settings</button>
         </div>
       </div>
     </div>
@@ -1136,6 +1162,8 @@ class HydroBalancePanel extends HTMLElement {
     this.$('use-soil-moisture').checked = !(entry && entry.use_soil_moisture === false);
     this.$('soil-moisture-sensor').value = sensors.sensor_soil_moisture || '';
     this.$('moisture-threshold').value = (entry && entry.moisture_skip_threshold != null) ? entry.moisture_skip_threshold : 40;
+    const retentionEl = this.$('history-retention');
+    if (retentionEl) retentionEl.value = (entry && entry.history_retention_days != null) ? entry.history_retention_days : 30;
     this._populatePicker('dl-sensors', 'sensor');
   }
 
@@ -1362,6 +1390,21 @@ class HydroBalancePanel extends HTMLElement {
         use_soil_moisture: this.$('use-soil-moisture').checked,
       });
       this._toast('Soil moisture settings saved!');
+      await this._loadAll();
+    } catch (e) {
+      this._toast('Error: ' + (e.message || e));
+    }
+  }
+
+  async saveHistoryConfig() {
+    let days = parseInt(this.$('history-retention').value, 10);
+    if (isNaN(days) || days < 1) days = 30;
+    try {
+      await this._ws('hydrobalance/config/save', {
+        entry_id: this._currentEntryId,
+        history_retention_days: days,
+      });
+      this._toast('History settings saved!');
       await this._loadAll();
     } catch (e) {
       this._toast('Error: ' + (e.message || e));

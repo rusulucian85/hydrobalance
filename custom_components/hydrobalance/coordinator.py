@@ -27,6 +27,10 @@ from .const import (
     LOGGER,
     STORAGE_VERSION,
     STORAGE_KEY_PREFIX,
+    STORAGE_KEY_EVENTS,
+    DEFAULT_HISTORY_RETENTION_DAYS,
+    HISTORY_MAX_EVENTS,
+    CONF_HISTORY_RETENTION_DAYS,
     DEFICIT_MIN,
     DEFICIT_MAX,
     SOIL_TYPES,
@@ -98,6 +102,12 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._store = Store(
             hass, STORAGE_VERSION, f"{STORAGE_KEY_PREFIX}.{entry.entry_id}"
         )
+        # Dedicated store for the activity log (persisted across restarts,
+        # pruned by retention). Kept apart from the main state file so it can
+        # grow to weeks of history without bloating every state save.
+        self._events_store = Store(
+            hass, STORAGE_VERSION, f"{STORAGE_KEY_EVENTS}.{entry.entry_id}"
+        )
         self._unsub_daily: list = []
         # One-shot cancel handle for the dynamically-scheduled watering start,
         # plus the planned start (ISO) surfaced on the dashboard.
@@ -139,9 +149,10 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_et: float | None = None
         self._last_effective_rain: float | None = None
 
-        # In-memory ring of recent events for the panel (not persisted; HA's
-        # logbook/recorder holds the durable record via fired bus events).
-        self._recent_events: deque[dict[str, Any]] = deque(maxlen=50)
+        # Recent events for the panel — persisted to _events_store and pruned by
+        # retention. Newest is appendleft (index 0); oldest at the right end.
+        # maxlen is a hard safety cap; age-based pruning is the primary bound.
+        self._recent_events: deque[dict[str, Any]] = deque(maxlen=HISTORY_MAX_EVENTS)
         # Trigger label for the run currently being processed.
         self._current_trigger = "auto"
 
@@ -153,6 +164,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "sensors": {},
             "sensors_fallback": {},
             CONF_MOISTURE_SKIP_THRESHOLD: DEFAULT_MOISTURE_SKIP_THRESHOLD,
+            CONF_HISTORY_RETENTION_DAYS: DEFAULT_HISTORY_RETENTION_DAYS,
             CONF_USE_SOIL_MOISTURE: DEFAULT_USE_SOIL_MOISTURE,
             CONF_WEATHER_ENTITY: None,
             CONF_WEATHER_PRIMARY: None,
@@ -190,6 +202,17 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._store_data.get(
             CONF_MOISTURE_SKIP_THRESHOLD, DEFAULT_MOISTURE_SKIP_THRESHOLD
         )
+
+    @property
+    def history_retention_days(self) -> int:
+        """How many days of Recent Activity to keep."""
+        try:
+            val = int(self._store_data.get(
+                CONF_HISTORY_RETENTION_DAYS, DEFAULT_HISTORY_RETENTION_DAYS
+            ))
+        except (TypeError, ValueError):
+            return DEFAULT_HISTORY_RETENTION_DAYS
+        return max(1, val)
 
     @property
     def weather_entity(self) -> str | None:
@@ -266,6 +289,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._store_data[CONF_MOISTURE_SKIP_THRESHOLD] = stored.get(
                 CONF_MOISTURE_SKIP_THRESHOLD, DEFAULT_MOISTURE_SKIP_THRESHOLD
             )
+            self._store_data[CONF_HISTORY_RETENTION_DAYS] = stored.get(
+                CONF_HISTORY_RETENTION_DAYS, DEFAULT_HISTORY_RETENTION_DAYS
+            )
             self._store_data[CONF_USE_SOIL_MOISTURE] = stored.get(
                 CONF_USE_SOIL_MOISTURE, DEFAULT_USE_SOIL_MOISTURE
             )
@@ -284,6 +310,15 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 CONF_USE_FORECAST, self.config.get(CONF_USE_FORECAST, True)
             )
             LOGGER.info("Loaded persisted data: deficits=%s, zones=%d", self._zone_deficits, len(self.zones))
+
+        # Load the persisted activity log (separate store), pruning anything
+        # already past the retention window on the way in.
+        events_stored = await self._events_store.async_load()
+        if events_stored and events_stored.get("events"):
+            self._recent_events = deque(
+                events_stored["events"], maxlen=HISTORY_MAX_EVENTS
+            )
+            self._prune_events()
 
         # Ensure all zones have a deficit entry
         for zone in self.zones:
@@ -326,6 +361,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._unsub_watering = None
         if self._watering_task and not self._watering_task.done():
             self._watering_task.cancel()
+        # Flush any debounced event save immediately so a restart keeps the log.
+        await self._events_store.async_save(self._events_snapshot())
         await self._persist()
 
     # ─── Data Update (every 15 min) ──────────────────────────────────────────
@@ -426,7 +463,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
                 for zone in self.zones
             },
-            "events": list(self._recent_events),
+            # Cap what the status poll carries — the panel shows a short list;
+            # the full retained log lives in the events store on disk.
+            "events": list(self._recent_events)[:100],
             "watering": {
                 "active": self._watering_active,
                 "current_zone": (
@@ -1420,6 +1459,18 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         zone = self._get_zone_config(zone_id)
         return zone.get(CONF_ZONE_NAME, zone_id) if zone else zone_id
 
+    def _prune_events(self) -> None:
+        """Drop events older than the retention window (oldest are at the right)."""
+        cutoff = (
+            datetime.now() - timedelta(days=self.history_retention_days)
+        ).isoformat()
+        while self._recent_events and self._recent_events[-1].get("time", "") < cutoff:
+            self._recent_events.pop()
+
+    def _events_snapshot(self) -> dict[str, Any]:
+        """Data for the events store (called by async_delay_save)."""
+        return {"events": list(self._recent_events)}
+
     @callback
     def _log_event(
         self,
@@ -1434,8 +1485,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Record an event: update usage counters, ring buffer, and fire on the bus.
 
         For watered events, accumulates per-zone water usage and stamps the
-        last-watered time. The fired bus event is what HA's logbook/recorder
-        persists, so this method keeps no durable history of its own.
+        last-watered time. Events are persisted to a dedicated store (pruned by
+        retention) and also fired on the bus for HA's logbook/recorder.
         """
         now_iso = datetime.now().isoformat()
 
@@ -1456,6 +1507,10 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "reason": reason,
         }
         self._recent_events.appendleft(event)
+        self._prune_events()
+        # Debounced write — several events in one watering run coalesce into a
+        # single disk save a few seconds later.
+        self._events_store.async_delay_save(self._events_snapshot, 10)
         self.hass.bus.async_fire(f"{DOMAIN}_event", event)
 
     def _get_zone_status(self, zone: dict[str, Any]) -> str:
@@ -1489,6 +1544,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_save_panel_config(self) -> None:
         """Save panel configuration (called from WebSocket API)."""
+        # Retention may have been lowered — apply it to the log right away.
+        self._prune_events()
+        self._events_store.async_delay_save(self._events_snapshot, 10)
         await self._persist()
 
     async def _persist(self) -> None:
@@ -1515,6 +1573,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "sensors": self._store_data.get("sensors", {}),
             "sensors_fallback": self._store_data.get("sensors_fallback", {}),
             CONF_MOISTURE_SKIP_THRESHOLD: self.moisture_skip_threshold,
+            CONF_HISTORY_RETENTION_DAYS: self.history_retention_days,
             CONF_USE_SOIL_MOISTURE: self.use_soil_moisture,
             CONF_WEATHER_ENTITY: self._store_data.get(CONF_WEATHER_ENTITY),
             CONF_WEATHER_PRIMARY: self._store_data.get(CONF_WEATHER_PRIMARY),

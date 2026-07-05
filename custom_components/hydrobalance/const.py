@@ -13,6 +13,14 @@ PLATFORMS = ["sensor", "binary_sensor", "switch", "number"]
 
 STORAGE_VERSION = 1
 STORAGE_KEY_PREFIX = "hydrobalance"
+# Separate store for the activity log so history retention doesn't bloat the
+# main state file. Key: "hydrobalance.events.<entry_id>".
+STORAGE_KEY_EVENTS = "hydrobalance.events"
+
+# How long the Recent Activity log is kept (days). Configurable in Settings.
+DEFAULT_HISTORY_RETENTION_DAYS = 30
+# Hard cap on stored events regardless of age, guarding against runaway growth.
+HISTORY_MAX_EVENTS = 2000
 
 # ─── ET Formula Constants ─────────────────────────────────────────────────────
 
@@ -148,6 +156,7 @@ CONF_STRATEGY = "strategy"
 CONF_USE_FORECAST = "use_forecast"
 CONF_USE_SOIL_MOISTURE = "use_soil_moisture"
 CONF_MOISTURE_SKIP_THRESHOLD = "moisture_skip_threshold"
+CONF_HISTORY_RETENTION_DAYS = "history_retention_days"
 CONF_ZONES = "zones"
 
 # Zone config keys

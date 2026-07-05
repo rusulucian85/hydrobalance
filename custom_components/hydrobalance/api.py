@@ -44,6 +44,7 @@ def ws_get_config(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
             "sensors": coordinator._store_data.get("sensors", {}),
             "sensors_fallback": coordinator._store_data.get("sensors_fallback", {}),
             "moisture_skip_threshold": coordinator.moisture_skip_threshold,
+            "history_retention_days": coordinator.history_retention_days,
             "use_soil_moisture": coordinator.use_soil_moisture,
             "weather_entity": coordinator.weather_entity,
             "weather_primary": coordinator.weather_primary,
@@ -63,6 +64,7 @@ def ws_get_config(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
     vol.Optional("sensors"): dict,
     vol.Optional("sensors_fallback"): dict,
     vol.Optional("moisture_skip_threshold"): vol.Coerce(float),
+    vol.Optional("history_retention_days"): vol.Coerce(int),
     vol.Optional("use_soil_moisture"): bool,
     vol.Optional("weather_entity"): vol.Any(str, None),
     vol.Optional("weather_primary"): vol.Any(str, None),
@@ -95,6 +97,8 @@ async def ws_save_config(hass: HomeAssistant, connection: websocket_api.ActiveCo
         coordinator._store_data["sensors_fallback"] = msg["sensors_fallback"]
     if "moisture_skip_threshold" in msg:
         coordinator._store_data["moisture_skip_threshold"] = msg["moisture_skip_threshold"]
+    if "history_retention_days" in msg:
+        coordinator._store_data["history_retention_days"] = msg["history_retention_days"]
     if "use_soil_moisture" in msg:
         coordinator._store_data["use_soil_moisture"] = msg["use_soil_moisture"]
     if "weather_entity" in msg:
