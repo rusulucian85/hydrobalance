@@ -18,6 +18,7 @@ def async_register_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_get_config)
     websocket_api.async_register_command(hass, ws_save_config)
     websocket_api.async_register_command(hass, ws_get_status)
+    websocket_api.async_register_command(hass, ws_get_history)
     websocket_api.async_register_command(hass, ws_discover_sensors)
     websocket_api.async_register_command(hass, ws_force_water)
     websocket_api.async_register_command(hass, ws_manual_water)
@@ -132,6 +133,18 @@ def ws_get_status(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
     result = {}
     for entry_id, coordinator in hass.data.get(DOMAIN, {}).items():
         result[entry_id] = coordinator.data if coordinator.data else {}
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "hydrobalance/history",
+})
+@callback
+def ws_get_history(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Return the full retained activity log (up to the retention cap)."""
+    result = {}
+    for entry_id, coordinator in hass.data.get(DOMAIN, {}).items():
+        result[entry_id] = list(coordinator._recent_events)
     connection.send_result(msg["id"], result)
 
 

@@ -26,6 +26,7 @@ const I18N = {
       no_zones: 'No zones configured yet.',
       go_to_zones: 'Go to Zones tab to add watering zones.',
       recent_activity: 'Recent Activity',
+      load_more: 'Load more',
       system: 'System',
       manual_water: 'Manual Water', stop_manual: 'Stop Manual',
       skip_next: 'Skip Next Watering', force_all: 'Force Water All',
@@ -77,6 +78,7 @@ const I18N = {
       no_zones: 'Nicio zonă configurată.',
       go_to_zones: 'Adaugă o zonă din tab-ul Zone.',
       recent_activity: 'Activitate recentă',
+      load_more: 'Încarcă mai mult',
       system: 'Sistem',
       manual_water: 'Udare manuală', stop_manual: 'Oprește manual',
       skip_next: 'Sări peste următoarea udare', force_all: 'Forțează udarea tuturor',
@@ -128,6 +130,7 @@ const I18N = {
       no_zones: 'Noch keine Zonen konfiguriert.',
       go_to_zones: 'Im Tab Zonen eine Bewässerungszone hinzufügen.',
       recent_activity: 'Letzte Aktivität',
+      load_more: 'Mehr laden',
       system: 'System',
       manual_water: 'Manuell bewässern', stop_manual: 'Manuell stoppen',
       skip_next: 'Nächste Bewässerung überspringen', force_all: 'Alle Zonen jetzt bewässern',
@@ -303,7 +306,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.16.1 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
+        <div class="version">v0.16.2 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
       </div>
       <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development" data-i18n="header.support_btn">&#9829; Support</button>
     </div>
@@ -367,6 +370,9 @@ const TEMPLATE = `
       <div class="card">
         <h2 data-i18n="dashboard.recent_activity">Recent Activity</h2>
         <div id="activity-list"><div class="empty-state"><p>No activity yet.</p></div></div>
+        <div class="actions" style="margin-top:8px;">
+          <button id="activity-load-more" class="btn btn-outline btn-sm hidden" onclick="window.__hb.loadMoreActivity()" data-i18n="dashboard.load_more">Load more</button>
+        </div>
       </div>
 
       <div class="card">
@@ -1012,10 +1018,32 @@ class HydroBalancePanel extends HTMLElement {
   }
 
   _renderActivity(events) {
+    this._statusEvents = events || [];
+    if (this._actShown == null) this._actShown = 20;
+    // Once the full on-disk log has been pulled, keep showing it but splice in
+    // any newer events the status poll has picked up since, so a live watering
+    // still appears at the top.
+    if (this._historyLoaded && this._historyEvents && this._historyEvents.length) {
+      const newest = this._historyEvents[0].time || '';
+      const fresh = this._statusEvents.filter(e => (e.time || '') > newest);
+      if (fresh.length) this._historyEvents = fresh.concat(this._historyEvents);
+    }
+    this._renderActivityList();
+  }
+
+  _activitySource() {
+    return (this._historyLoaded && this._historyEvents)
+      ? this._historyEvents
+      : (this._statusEvents || []);
+  }
+
+  _renderActivityList() {
     const container = this.$('activity-list');
     if (!container) return;
-    if (!events.length) {
+    const source = this._activitySource();
+    if (!source.length) {
       container.innerHTML = '<div class="empty-state"><p>No activity yet.</p></div>';
+      this._updateLoadMore();
       return;
     }
     const labels = {
@@ -1033,7 +1061,7 @@ class HydroBalancePanel extends HTMLElement {
       rain_delay: 'rain delay / vacation',
     };
     let html = '';
-    for (const ev of events.slice(0, 20)) {
+    for (const ev of source.slice(0, this._actShown)) {
       const [, label] = labels[ev.kind] || ['', ev.kind];
       let detail = '';
       if (ev.kind === 'watered') {
@@ -1055,6 +1083,37 @@ class HydroBalancePanel extends HTMLElement {
         </div>`;
     }
     container.innerHTML = html;
+    this._updateLoadMore();
+  }
+
+  _updateLoadMore() {
+    const btn = this.$('activity-load-more');
+    if (!btn) return;
+    const source = this._activitySource();
+    const moreInSource = this._actShown < source.length;
+    // The status payload is capped at 100; if we've hit that and haven't yet
+    // pulled the full log, there may be older entries on disk.
+    const maybeMoreOnDisk = !this._historyLoaded && (this._statusEvents || []).length >= 100;
+    btn.classList.toggle('hidden', !(moreInSource || maybeMoreOnDisk));
+  }
+
+  async loadMoreActivity() {
+    // If we're about to run past the capped status payload, pull the full log.
+    const needDisk = !this._historyLoaded
+      && (this._actShown + 20) >= (this._statusEvents || []).length
+      && (this._statusEvents || []).length >= 100;
+    if (needDisk) {
+      try {
+        const res = await this._ws('hydrobalance/history', {});
+        const all = (res && res[this._currentEntryId]) || [];
+        this._historyEvents = all;
+        this._historyLoaded = true;
+      } catch (e) {
+        this._toast('Error: ' + (e.message || e));
+      }
+    }
+    this._actShown += 20;
+    this._renderActivityList();
   }
 
   _relTime(iso) {
