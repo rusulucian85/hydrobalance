@@ -17,6 +17,11 @@ STORAGE_KEY_PREFIX = "hydrobalance"
 # main state file. Key: "hydrobalance.events.<entry_id>".
 STORAGE_KEY_EVENTS = "hydrobalance.events"
 
+# Grace window after startup during which "source offline" health issues are
+# suppressed — weather integrations often finish loading a little after we do,
+# and crying "both channels offline" on every restart is just noise.
+STARTUP_GRACE_MINUTES = 5
+
 # How long the Recent Activity log is kept (days). Configurable in Settings.
 DEFAULT_HISTORY_RETENTION_DAYS = 30
 # Hard cap on stored events regardless of age, guarding against runaway growth.

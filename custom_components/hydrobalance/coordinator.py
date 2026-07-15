@@ -26,6 +26,7 @@ from .const import (
     STORAGE_VERSION,
     STORAGE_KEY_PREFIX,
     STORAGE_KEY_EVENTS,
+    STARTUP_GRACE_MINUTES,
     DEFAULT_HISTORY_RETENTION_DAYS,
     HISTORY_MAX_EVENTS,
     CONF_HISTORY_RETENTION_DAYS,
@@ -107,6 +108,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass, STORAGE_VERSION, f"{STORAGE_KEY_EVENTS}.{entry.entry_id}"
         )
         self._unsub_daily: list = []
+        # When this coordinator started — used for a short grace window after
+        # restart during which "source offline" issues are suppressed.
+        self._started_at: datetime | None = None
         # One-shot cancel handle for the dynamically-scheduled watering start,
         # plus the planned start (ISO) surfaced on the dashboard.
         self._unsub_watering: Any = None
@@ -348,6 +352,19 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Safety check: turn off any managed switches that are on after restart
         await self._safety_check_switches()
+
+        # Mark startup and schedule an early re-poll: our first refresh can run
+        # before the weather integrations finish loading, so a quick follow-up
+        # picks up their entities and clears any transient "offline" banner well
+        # before the regular 15-min cycle would.
+        self._started_at = dt_util.now()
+        self._unsub_daily.append(
+            async_call_later(
+                self.hass, 90, lambda _now: self.hass.async_create_task(
+                    self.async_request_refresh()
+                )
+            )
+        )
 
     async def async_shutdown(self) -> None:
         """Clean up on unload."""
@@ -680,32 +697,52 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 legacy_offline.append({"key": key, "label": label, "primary": p, "fallback": f})
 
         issues: list[dict[str, str]] = []
-        if primary and secondary and not primary_ok and not secondary_ok:
-            issues.append({"severity": "critical", "message": (
-                f"Both weather channels offline ({primary} & {secondary}) — values may be stale"
-            )})
-        elif primary and not primary_ok and secondary_ok:
-            issues.append({"severity": "warning", "message": (
-                f"Primary weather {primary} offline — using secondary {secondary}"
-            )})
-        elif primary and not primary_ok and not secondary:
-            issues.append({"severity": "critical", "message": (
-                f"Weather channel {primary} offline and no secondary configured"
-            )})
-        elif not primary and not secondary and not legacy_offline:
-            issues.append({"severity": "warning", "message": (
-                "No weather channel configured — set one in Settings"
-            )})
-        for zh in zones_health:
-            for e in zh["local"]:
-                if not e["available"]:
-                    issues.append({"severity": "info", "message": (
-                        f"Zone {zh['name']}: local {e['label']} ({e['entity']}) offline"
-                    )})
-        for lo in legacy_offline:
+        # Grace window right after a restart: weather/sensor integrations may
+        # still be loading, so their entities read "unavailable" for a moment.
+        # Surface a single soft note instead of a wall of scary offline errors.
+        in_grace = (
+            self._started_at is not None
+            and (dt_util.now() - self._started_at).total_seconds()
+            < STARTUP_GRACE_MINUTES * 60
+        )
+        anything_offline = (
+            (primary and not primary_ok)
+            or (secondary and not secondary_ok)
+            or legacy_offline
+            or any(not e["available"] for zh in zones_health for e in zh["local"])
+        )
+
+        if in_grace and anything_offline:
             issues.append({"severity": "info", "message": (
-                f"Legacy sensor {lo['label']} offline (consider migrating to a weather channel)"
+                "Starting up — waiting for weather/sensor sources to come online"
             )})
+        else:
+            if primary and secondary and not primary_ok and not secondary_ok:
+                issues.append({"severity": "critical", "message": (
+                    f"Both weather channels offline ({primary} & {secondary}) — values may be stale"
+                )})
+            elif primary and not primary_ok and secondary_ok:
+                issues.append({"severity": "warning", "message": (
+                    f"Primary weather {primary} offline — using secondary {secondary}"
+                )})
+            elif primary and not primary_ok and not secondary:
+                issues.append({"severity": "critical", "message": (
+                    f"Weather channel {primary} offline and no secondary configured"
+                )})
+            elif not primary and not secondary and not legacy_offline:
+                issues.append({"severity": "warning", "message": (
+                    "No weather channel configured — set one in Settings"
+                )})
+            for zh in zones_health:
+                for e in zh["local"]:
+                    if not e["available"]:
+                        issues.append({"severity": "info", "message": (
+                            f"Zone {zh['name']}: local {e['label']} ({e['entity']}) offline"
+                        )})
+            for lo in legacy_offline:
+                issues.append({"severity": "info", "message": (
+                    f"Legacy sensor {lo['label']} offline (consider migrating to a weather channel)"
+                )})
 
         return {
             "weather_primary": {"entity": primary, "available": primary_ok} if primary else None,
