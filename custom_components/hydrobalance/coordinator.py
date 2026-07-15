@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, date
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import SUN_EVENT_SUNRISE
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import (
     async_call_later,
@@ -17,7 +16,6 @@ from homeassistant.helpers.event import (
     async_track_time_change,
 )
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.sun import get_location_astral_event_next
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 import homeassistant.util.dt as dt_util
 
@@ -958,10 +956,10 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
         self._last_calc_date = today_str
-        # Now that deficits are current, back-solve tomorrow morning's start so
-        # watering finishes by the target time.
-        self._schedule_next_watering()
+        # Persist the fresh deficits first — scheduling must never be able to
+        # skip this. Then back-solve tomorrow morning's start from them.
         await self._persist()
+        self._schedule_next_watering()
         await self.async_request_refresh()
 
     # ─── Dynamic Start Scheduling ─────────────────────────────────────────────
@@ -1000,6 +998,20 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Total wall-clock minutes to water every zone that's currently due."""
         return sum(self._estimate_zone_runtime(z) for z in self.zones)
 
+    def _next_sunrise_local(self) -> datetime | None:
+        """Next sunrise as a local aware datetime, read from the sun.sun entity.
+
+        Uses the ``next_rising`` attribute (the integration already depends on
+        the ``sun`` component) rather than an astral helper, which keeps this
+        robust across HA versions and off the deprecated helper path.
+        """
+        state = self.hass.states.get("sun.sun")
+        if state is None:
+            return None
+        nxt = state.attributes.get("next_rising")
+        parsed = dt_util.parse_datetime(nxt) if nxt else None
+        return dt_util.as_local(parsed) if parsed else None
+
     def _compute_planned_start(self) -> datetime | None:
         """Aware datetime to start the morning run, or None if nothing is due.
 
@@ -1010,26 +1022,28 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
 
         now = dt_util.now()
-        sunrise = dt_util.as_local(
-            get_location_astral_event_next(
-                self.hass, SUN_EVENT_SUNRISE, dt_util.utcnow()
-            )
-        )
+        sunrise = self._next_sunrise_local()
         # 07:00, 04:30 and sunrise all belong to the same morning — anchor the
-        # window to sunrise's local date so DST/tz stays consistent.
-        target_finish = sunrise.replace(
+        # window to sunrise's local date so DST/tz stays consistent. Without sun
+        # data, fall back to tomorrow and drop the sunrise cap.
+        anchor = sunrise if sunrise is not None else (now + timedelta(days=1))
+        target_finish = anchor.replace(
             hour=WATERING_TARGET_FINISH.hour,
             minute=WATERING_TARGET_FINISH.minute,
             second=0,
             microsecond=0,
         )
-        earliest = sunrise.replace(
+        earliest = anchor.replace(
             hour=WATERING_EARLIEST_START.hour,
             minute=WATERING_EARLIEST_START.minute,
             second=0,
             microsecond=0,
         )
-        latest = sunrise - timedelta(hours=WATERING_SUNRISE_OFFSET_H)
+        latest = (
+            sunrise - timedelta(hours=WATERING_SUNRISE_OFFSET_H)
+            if sunrise is not None
+            else target_finish
+        )
 
         target_start = target_finish - timedelta(minutes=total_min)
         planned = max(min(target_start, latest), earliest)
@@ -1042,26 +1056,35 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @callback
     def _schedule_next_watering(self) -> None:
-        """(Re)schedule the one-shot morning watering start."""
+        """(Re)schedule the one-shot morning watering start.
+
+        Wrapped defensively: a failure here must never propagate into the daily
+        calc (which would skip persistence) or silently leave watering
+        unscheduled without a trace.
+        """
         if self._unsub_watering is not None:
             self._unsub_watering()
             self._unsub_watering = None
 
-        planned = self._compute_planned_start()
-        self._planned_start = planned.isoformat() if planned else None
-        if planned is None:
-            LOGGER.info("No watering scheduled — no zones above threshold")
-            return
+        try:
+            planned = self._compute_planned_start()
+            self._planned_start = planned.isoformat() if planned else None
+            if planned is None:
+                LOGGER.info("No watering scheduled — no zones above threshold")
+                return
 
-        self._unsub_watering = async_track_point_in_time(
-            self.hass, self._async_watering_check, planned
-        )
-        LOGGER.info(
-            "Next watering start scheduled for %s (est %.0f min, finish ~%s)",
-            planned.strftime("%Y-%m-%d %H:%M"),
-            self._estimate_total_runtime(),
-            (planned + timedelta(minutes=self._estimate_total_runtime())).strftime("%H:%M"),
-        )
+            self._unsub_watering = async_track_point_in_time(
+                self.hass, self._async_watering_check, planned
+            )
+            LOGGER.info(
+                "Next watering start scheduled for %s (est %.0f min, finish ~%s)",
+                planned.strftime("%Y-%m-%d %H:%M"),
+                self._estimate_total_runtime(),
+                (planned + timedelta(minutes=self._estimate_total_runtime())).strftime("%H:%M"),
+            )
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to schedule next watering")
+            self._planned_start = None
 
     # ─── Watering Check (dynamic start) ───────────────────────────────────────
 
