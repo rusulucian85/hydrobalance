@@ -10,10 +10,6 @@ import math
 from datetime import date, datetime
 
 from .const import (
-    ET_COEFF_TEMP,
-    ET_COEFF_UV,
-    ET_COEFF_WIND,
-    ET_COEFF_HUMIDITY,
     ET_MIN,
     ET_MAX,
     SOIL_TYPES,
@@ -36,22 +32,38 @@ ORIENTATION_AZIMUTHS = {
 }
 
 
-def calculate_et(
-    tmin: float, tmax: float, uv: float, wind: float, humidity: float
+def calculate_et0_hargreaves(
+    tmin: float, tmax: float, latitude: float, day_of_year: int
 ) -> float:
-    """Calculate daily evapotranspiration in mm.
+    """Reference evapotranspiration ET0 (mm/day) via Hargreaves–Samani.
 
-    ET = (Tmean × 0.15) + (UV × 0.25) + (wind_km_h × 0.02) − (humidity% × 0.015)
-    Clamped to 0–8 mm/day.
+    ET0 = 0.0023 × (Tmean + 17.8) × √(Tmax − Tmin) × Ra
+
+    where Ra is extraterrestrial radiation (mm/day equivalent), derived purely
+    from latitude and day-of-year. This is the FAO-56 recommended method when
+    reliable humidity / wind / solar-radiation data isn't available — it needs
+    only temperature (which weather sources report dependably), so it doesn't
+    inherit the noise of flaky UV / humidity sensors. Clamped to 0..ET_MAX.
+
+    The temperature range (Tmax − Tmin) acts as a built-in proxy for cloud /
+    humidity: overcast, humid days have a small range and therefore lower ET0.
     """
+    phi = math.radians(latitude)
+    # Inverse relative Earth–Sun distance and solar declination (FAO-56 eq.).
+    dr = 1 + 0.033 * math.cos(2 * math.pi / 365 * day_of_year)
+    dec = 0.409 * math.sin(2 * math.pi / 365 * day_of_year - 1.39)
+    # Sunset hour angle — clamp the acos domain for high latitudes / solstices.
+    cos_ws = max(-1.0, min(1.0, -math.tan(phi) * math.tan(dec)))
+    ws = math.acos(cos_ws)
+    ra = (24 * 60 / math.pi) * 0.0820 * dr * (
+        ws * math.sin(phi) * math.sin(dec)
+        + math.cos(phi) * math.cos(dec) * math.sin(ws)
+    )  # MJ/m²/day
+    ra_mm = ra * 0.408  # convert to mm/day equivalent
+    trange = max(0.0, tmax - tmin)
     tmean = (tmax + tmin) / 2
-    et = (
-        tmean * ET_COEFF_TEMP
-        + uv * ET_COEFF_UV
-        + wind * ET_COEFF_WIND
-        - humidity * ET_COEFF_HUMIDITY
-    )
-    return max(ET_MIN, min(ET_MAX, round(et, 2)))
+    et0 = 0.0023 * (tmean + 17.8) * math.sqrt(trange) * ra_mm
+    return max(ET_MIN, min(ET_MAX, round(et0, 2)))
 
 
 def calculate_effective_rain(rain_mm: float, soil_type: str) -> float:

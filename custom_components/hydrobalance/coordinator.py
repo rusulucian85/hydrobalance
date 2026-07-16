@@ -829,20 +829,17 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None  # no temperature data yet → don't show a live number
 
         f = self._et_fraction_of_day()
-        uv = self._daily_peak_uv
-        wind = self._resolve_term("wind_speed", zone) or 0.0
-        hum = self._resolve_term("humidity", zone) or 50.0
         sun_coeff = self._calculate_sun_coefficient(zone)
         kc = zone.get(CONF_ZONE_CROP_COEFFICIENT, DEFAULT_CROP_COEFFICIENT)
 
         # A: from what actually happened.
-        base_a = self.calculate_et(tmin, tmax_a, uv, wind, hum)
+        base_a = self.calculate_et0(tmin, tmax_a)
         et_a = base_a * sun_coeff * kc * f
 
         # B: from forecast Tmax, only if it's hotter than what we've seen.
         tmax_fc = self._today_forecast_tmax
         if tmax_fc is not None and tmax_fc > tmax_a:
-            base_b = self.calculate_et(tmin, tmax_fc, uv, wind, hum)
+            base_b = self.calculate_et0(tmin, tmax_fc)
             et_b = base_b * sun_coeff * kc * f
         else:
             et_b = et_a
@@ -868,8 +865,22 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     # ─── ET Calculation ───────────────────────────────────────────────────────
 
-    calculate_et = staticmethod(calc.calculate_et)
     calculate_effective_rain = staticmethod(calc.calculate_effective_rain)
+
+    def calculate_et0(self, tmin: float, tmax: float) -> float:
+        """Reference ET0 (mm/day) for this location — Hargreaves–Samani.
+
+        Temperature-only, using the instance's latitude and today's day-of-year.
+        Replaces the old UV/humidity/wind linear formula, which under-predicted
+        on humid days and whenever the UV sensor read low. Per-zone ET is this
+        ET0 scaled by the zone's sun_coefficient and crop coefficient (Kc).
+        """
+        return calc.calculate_et0_hargreaves(
+            tmin,
+            tmax,
+            self.hass.config.latitude,
+            datetime.now().timetuple().tm_yday,
+        )
 
     # ─── Sun Coefficient ──────────────────────────────────────────────────────
 
@@ -916,18 +927,16 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         tmin = self._daily_tmin if self._daily_tmin < 99 else None
         tmax = self._daily_tmax if self._daily_tmax > -99 else None
-        uv = self._daily_peak_uv
-        wind = self._resolve_term("wind_speed") or 0.0
-        humidity = self._resolve_term("humidity") or 50.0
         rain = self._daily_rain
 
         if tmin is None or tmax is None:
             LOGGER.warning("Missing temperature data, skipping ET calculation")
             return
 
-        # System-level ET — what the dashboard shows. Per-zone ET below uses
-        # the zone's own local-sensor accumulators when configured.
-        et = self.calculate_et(tmin, tmax, uv, wind, humidity)
+        # System-level ET0 (Hargreaves, temperature-only) — what the dashboard
+        # shows. Per-zone ET below scales this by sun_coefficient and Kc, using
+        # the zone's own local-sensor temperature accumulators when configured.
+        et = self.calculate_et0(tmin, tmax)
 
         # Calculate effective rain (system-level, then adjusted per zone)
         system_soil = self.soil_type
@@ -938,8 +947,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_effective_rain = round(eff_rain_system, 2)
 
         LOGGER.info(
-            "Daily ET=%.2fmm, Rain=%.1fmm, EffRain=%.2fmm (Tmin=%.1f Tmax=%.1f UV=%.1f Wind=%.1f Hum=%.0f)",
-            et, rain, eff_rain_system, tmin, tmax, uv, wind, humidity,
+            "Daily ET0=%.2fmm (Hargreaves, Tmin=%.1f Tmax=%.1f), Rain=%.1fmm, EffRain=%.2fmm",
+            et, tmin, tmax, rain, eff_rain_system,
         )
 
         # Update each zone's deficit. Each zone may carry its own local
@@ -956,9 +965,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ztmin, ztmax = zd["tmin"], zd["tmax"]
             else:
                 ztmin, ztmax = tmin, tmax
-            zhumidity = self._resolve_term("humidity", zone) or humidity
-            zwind = self._resolve_term("wind_speed", zone) or wind
-            zone_base_et = self.calculate_et(ztmin, ztmax, uv, zwind, zhumidity)
+            zone_base_et = self.calculate_et0(ztmin, ztmax)
 
             # Per-zone wet-soil ET freeze — uses the zone's own moisture if it
             # has a local sensor; otherwise the system-wide soil sensor.
@@ -985,9 +992,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._zone_deficits[zid] = round(new_deficit, 1)
 
             LOGGER.info(
-                "Zone %s: ET=%.2f×%.2f×Kc%.2f=%.2fmm (Tmin=%.1f Tmax=%.1f Hum=%.0f Wind=%.1f%s), EffRain=%.2fmm, Deficit: %.1f→%.1f",
+                "Zone %s: ET0=%.2f×sun%.2f×Kc%.2f=%.2fmm (Tmin=%.1f Tmax=%.1f%s), EffRain=%.2fmm, Deficit: %.1f→%.1f",
                 zid, zone_base_et, sun_coeff, kc, zone_et,
-                ztmin, ztmax, zhumidity, zwind,
+                ztmin, ztmax,
                 " FROZEN(wet)" if freeze_et else "",
                 eff_rain, current, new_deficit,
             )

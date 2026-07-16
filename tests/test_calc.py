@@ -5,25 +5,41 @@ import pytest
 from hb import calc
 
 
-# ─── ET ────────────────────────────────────────────────────────────────────
+# ─── ET0 (Hargreaves–Samani) ─────────────────────────────────────────────────
 
-def test_calculate_et_known_value():
-    # Tmean=23.5 → 3.525 + 2.0 + 0.2 − 0.675 = 5.05
-    assert calc.calculate_et(16, 31, 8, 10, 45) == 5.05
-
-
-def test_calculate_et_clamped_to_max():
-    assert calc.calculate_et(30, 40, 12, 30, 10) == 8.0
+# Mid-summer at ~45°N (day 180) with a hot 15→30°C spread should land in the
+# realistic 5.5–6.5 mm/day band for reference ET0.
+def test_et0_summer_realistic():
+    et0 = calc.calculate_et0_hargreaves(15, 30, 45.0, 180)
+    assert 5.5 <= et0 <= 6.5
 
 
-def test_calculate_et_never_negative():
-    assert calc.calculate_et(0, 0, 0, 0, 100) == 0.0
+def test_et0_zero_temperature_range_is_zero():
+    # √(Tmax − Tmin) = 0 when there's no diurnal range.
+    assert calc.calculate_et0_hargreaves(20, 20, 45.0, 180) == 0.0
 
 
-def test_calculate_et_humidity_reduces():
-    dry = calc.calculate_et(15, 25, 5, 5, 20)
-    humid = calc.calculate_et(15, 25, 5, 5, 90)
-    assert humid < dry
+def test_et0_wider_range_gives_more_et():
+    # Same mean temperature, wider swing → more ET0 (range is a radiation proxy).
+    narrow = calc.calculate_et0_hargreaves(20, 24, 45.0, 180)
+    wide = calc.calculate_et0_hargreaves(12, 32, 45.0, 180)
+    assert wide > narrow
+
+
+def test_et0_summer_exceeds_winter():
+    # Identical temps, but far less extraterrestrial radiation in January.
+    summer = calc.calculate_et0_hargreaves(10, 24, 45.0, 180)
+    winter = calc.calculate_et0_hargreaves(10, 24, 45.0, 15)
+    assert summer > winter
+
+
+def test_et0_clamped_to_max():
+    # Extreme heat + huge range would overshoot; result is capped at ET_MAX.
+    assert calc.calculate_et0_hargreaves(20, 48, 45.0, 180) == calc.ET_MAX
+
+
+def test_et0_never_negative():
+    assert calc.calculate_et0_hargreaves(-5, -5, 45.0, 15) >= 0.0
 
 
 # ─── Effective rain ──────────────────────────────────────────────────────────
