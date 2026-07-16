@@ -36,6 +36,15 @@ ET_COEFF_HUMIDITY = 0.015
 ET_MIN = 0.0
 ET_MAX = 8.0
 
+# Selectable ET model (Settings dropdown). "hargreaves" is temperature-only and
+# recommended; "linear" is the legacy weather-based formula (UV/humidity/wind).
+CONF_ET_MODEL = "et_model"
+DEFAULT_ET_MODEL = "hargreaves"
+ET_MODELS = {
+    "hargreaves": "Hargreaves ET0 (temperature-based, recommended)",
+    "linear": "Weather-based (UV + humidity + wind)",
+}
+
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 
 DEFAULT_SPRINKLER_RATE = 2.0  # mm per 30 min

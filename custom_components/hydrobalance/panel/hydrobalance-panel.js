@@ -51,6 +51,10 @@ const I18N = {
       history_retention: 'Keep history for (days)',
       save_history: 'Save History Settings',
       soil_strategy: 'Soil & Strategy',
+      et_model: 'ET Calculation Model',
+      et_hargreaves: 'Hargreaves ET0 (temperature-based, recommended)',
+      et_linear: 'Weather-based (UV + humidity + wind)',
+      et_model_hint: 'Hargreaves needs only temperature (robust). The weather-based model reacts to UV/humidity/wind — only pick it if those sensors are reliable.',
       soil_type: 'Soil Type', strategy: 'Strategy',
     },
     support: {
@@ -103,6 +107,10 @@ const I18N = {
       history_retention: 'Păstrează istoricul (zile)',
       save_history: 'Salvează setările istoricului',
       soil_strategy: 'Sol & Strategie',
+      et_model: 'Model de calcul ET',
+      et_hargreaves: 'Hargreaves ET0 (bazat pe temperatură, recomandat)',
+      et_linear: 'Bazat pe vreme (UV + umiditate + vânt)',
+      et_model_hint: 'Hargreaves are nevoie doar de temperatură (robust). Modelul pe vreme reacționează la UV/umiditate/vânt — alege-l doar dacă senzorii ăia sunt de încredere.',
       soil_type: 'Tip sol', strategy: 'Strategie',
     },
     support: {
@@ -155,6 +163,10 @@ const I18N = {
       history_retention: 'Verlauf aufbewahren (Tage)',
       save_history: 'Verlaufseinstellungen speichern',
       soil_strategy: 'Boden & Strategie',
+      et_model: 'ET-Berechnungsmodell',
+      et_hargreaves: 'Hargreaves ET0 (temperaturbasiert, empfohlen)',
+      et_linear: 'Wetterbasiert (UV + Feuchte + Wind)',
+      et_model_hint: 'Hargreaves braucht nur Temperatur (robust). Das wetterbasierte Modell reagiert auf UV/Feuchte/Wind — nur wählen, wenn diese Sensoren zuverlässig sind.',
       soil_type: 'Bodentyp', strategy: 'Strategie',
     },
     support: {
@@ -306,7 +318,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.17.0 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
+        <div class="version">v0.17.1 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
       </div>
       <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development" data-i18n="header.support_btn">&#9829; Support</button>
     </div>
@@ -481,6 +493,16 @@ const TEMPLATE = `
               <option value="lush_green">Lush Green (8mm / 6mm)</option>
               <option value="clay_safe">Clay-Safe (14mm / 3mm)</option>
             </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label data-i18n="settings.et_model">ET Calculation Model</label>
+          <select id="et-model">
+            <option value="hargreaves" data-i18n="settings.et_hargreaves">Hargreaves ET0 (temperature-based, recommended)</option>
+            <option value="linear" data-i18n="settings.et_linear">Weather-based (UV + humidity + wind)</option>
+          </select>
+          <div style="font-size:0.8em;color:var(--text-secondary);margin-top:6px;" data-i18n="settings.et_model_hint">
+            Hargreaves needs only temperature (robust). The weather-based model reacts to UV/humidity/wind — only pick it if those sensors are reliable.
           </div>
         </div>
         <div class="actions">
@@ -1216,6 +1238,8 @@ class HydroBalancePanel extends HTMLElement {
 
     this.$('soil-type').value = (entry && entry.soil_type) || 'clay';
     this.$('strategy').value = (entry && entry.strategy) || 'balanced';
+    const etModelEl = this.$('et-model');
+    if (etModelEl) etModelEl.value = (entry && entry.et_model) || 'hargreaves';
 
     const sensors = (entry && entry.sensors) || {};
     this.$('use-soil-moisture').checked = !(entry && entry.use_soil_moisture === false);
@@ -1426,6 +1450,7 @@ class HydroBalancePanel extends HTMLElement {
         entry_id: this._currentEntryId,
         soil_type: this.$('soil-type').value,
         strategy: this.$('strategy').value,
+        et_model: this.$('et-model').value,
       });
       this._toast('Settings saved!');
       await this._loadAll();

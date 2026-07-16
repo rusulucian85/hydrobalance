@@ -55,6 +55,8 @@ from .const import (
     CONF_SENSOR_RAIN_FORECAST,
     CONF_SENSOR_SOIL_MOISTURE,
     CONF_MOISTURE_SKIP_THRESHOLD,
+    CONF_ET_MODEL,
+    DEFAULT_ET_MODEL,
     CONF_ZONE_ID,
     CONF_ZONE_NAME,
     CONF_ZONE_SWITCH,
@@ -167,6 +169,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "sensors_fallback": {},
             CONF_MOISTURE_SKIP_THRESHOLD: DEFAULT_MOISTURE_SKIP_THRESHOLD,
             CONF_HISTORY_RETENTION_DAYS: DEFAULT_HISTORY_RETENTION_DAYS,
+            CONF_ET_MODEL: DEFAULT_ET_MODEL,
             CONF_USE_SOIL_MOISTURE: DEFAULT_USE_SOIL_MOISTURE,
             CONF_WEATHER_ENTITY: None,
             CONF_WEATHER_PRIMARY: None,
@@ -204,6 +207,11 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._store_data.get(
             CONF_MOISTURE_SKIP_THRESHOLD, DEFAULT_MOISTURE_SKIP_THRESHOLD
         )
+
+    @property
+    def et_model(self) -> str:
+        """Selected ET model key ('hargreaves' or 'linear')."""
+        return self._store_data.get(CONF_ET_MODEL, DEFAULT_ET_MODEL) or DEFAULT_ET_MODEL
 
     @property
     def history_retention_days(self) -> int:
@@ -293,6 +301,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             self._store_data[CONF_HISTORY_RETENTION_DAYS] = stored.get(
                 CONF_HISTORY_RETENTION_DAYS, DEFAULT_HISTORY_RETENTION_DAYS
+            )
+            self._store_data[CONF_ET_MODEL] = stored.get(
+                CONF_ET_MODEL, DEFAULT_ET_MODEL
             )
             self._store_data[CONF_USE_SOIL_MOISTURE] = stored.get(
                 CONF_USE_SOIL_MOISTURE, DEFAULT_USE_SOIL_MOISTURE
@@ -833,13 +844,13 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         kc = zone.get(CONF_ZONE_CROP_COEFFICIENT, DEFAULT_CROP_COEFFICIENT)
 
         # A: from what actually happened.
-        base_a = self.calculate_et0(tmin, tmax_a)
+        base_a = self.calculate_et_base(tmin, tmax_a, zone)
         et_a = base_a * sun_coeff * kc * f
 
         # B: from forecast Tmax, only if it's hotter than what we've seen.
         tmax_fc = self._today_forecast_tmax
         if tmax_fc is not None and tmax_fc > tmax_a:
-            base_b = self.calculate_et0(tmin, tmax_fc)
+            base_b = self.calculate_et_base(tmin, tmax_fc, zone)
             et_b = base_b * sun_coeff * kc * f
         else:
             et_b = et_a
@@ -867,14 +878,27 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     calculate_effective_rain = staticmethod(calc.calculate_effective_rain)
 
-    def calculate_et0(self, tmin: float, tmax: float) -> float:
-        """Reference ET0 (mm/day) for this location — Hargreaves–Samani.
+    def calculate_et_base(
+        self, tmin: float, tmax: float, zone: dict[str, Any] | None = None
+    ) -> float:
+        """Base ET (mm/day) using the model selected in Settings.
 
-        Temperature-only, using the instance's latitude and today's day-of-year.
-        Replaces the old UV/humidity/wind linear formula, which under-predicted
-        on humid days and whenever the UV sensor read low. Per-zone ET is this
-        ET0 scaled by the zone's sun_coefficient and crop coefficient (Kc).
+        - ``hargreaves`` (default): temperature-only ET0, using this location's
+          latitude and today's day-of-year. Robust — no dependency on UV /
+          humidity sensors.
+        - ``linear``: the legacy weather-based formula; pulls UV (daily peak),
+          wind and humidity, resolved for ``zone`` when given so per-zone local
+          sensors are honoured.
+
+        Per-zone ET elsewhere scales this by sun_coefficient and Kc.
         """
+        if self.et_model == "linear":
+            uv = self._daily_peak_uv
+            wind = self._resolve_term("wind_speed", zone) or 0.0
+            humidity = self._resolve_term("humidity", zone)
+            if humidity is None:
+                humidity = 50.0
+            return calc.calculate_et_linear(tmin, tmax, uv, wind, humidity)
         return calc.calculate_et0_hargreaves(
             tmin,
             tmax,
@@ -933,10 +957,10 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             LOGGER.warning("Missing temperature data, skipping ET calculation")
             return
 
-        # System-level ET0 (Hargreaves, temperature-only) — what the dashboard
+        # System-level base ET (per the selected model) — what the dashboard
         # shows. Per-zone ET below scales this by sun_coefficient and Kc, using
         # the zone's own local-sensor temperature accumulators when configured.
-        et = self.calculate_et0(tmin, tmax)
+        et = self.calculate_et_base(tmin, tmax)
 
         # Calculate effective rain (system-level, then adjusted per zone)
         system_soil = self.soil_type
@@ -965,7 +989,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ztmin, ztmax = zd["tmin"], zd["tmax"]
             else:
                 ztmin, ztmax = tmin, tmax
-            zone_base_et = self.calculate_et0(ztmin, ztmax)
+            zone_base_et = self.calculate_et_base(ztmin, ztmax, zone)
 
             # Per-zone wet-soil ET freeze — uses the zone's own moisture if it
             # has a local sensor; otherwise the system-wide soil sensor.
@@ -1641,6 +1665,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "sensors_fallback": self._store_data.get("sensors_fallback", {}),
             CONF_MOISTURE_SKIP_THRESHOLD: self.moisture_skip_threshold,
             CONF_HISTORY_RETENTION_DAYS: self.history_retention_days,
+            CONF_ET_MODEL: self.et_model,
             CONF_USE_SOIL_MOISTURE: self.use_soil_moisture,
             CONF_WEATHER_ENTITY: self._store_data.get(CONF_WEATHER_ENTITY),
             CONF_WEATHER_PRIMARY: self._store_data.get(CONF_WEATHER_PRIMARY),

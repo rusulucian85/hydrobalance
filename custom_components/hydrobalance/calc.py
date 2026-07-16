@@ -10,6 +10,10 @@ import math
 from datetime import date, datetime
 
 from .const import (
+    ET_COEFF_TEMP,
+    ET_COEFF_UV,
+    ET_COEFF_WIND,
+    ET_COEFF_HUMIDITY,
     ET_MIN,
     ET_MAX,
     SOIL_TYPES,
@@ -30,6 +34,25 @@ ORIENTATION_AZIMUTHS = {
     "W": 90,
     "NW": 135,
 }
+
+
+def calculate_et_linear(
+    tmin: float, tmax: float, uv: float, wind: float, humidity: float
+) -> float:
+    """Legacy weather-based ET (mm/day) — selectable as an alternative model.
+
+    ET = (Tmean × 0.15) + (UV × 0.25) + (wind_km_h × 0.02) − (humidity% × 0.015)
+    Clamped to 0–ET_MAX. Reacts to UV / humidity / wind directly, so it needs
+    those sensors to be trustworthy; where they aren't, prefer Hargreaves ET0.
+    """
+    tmean = (tmax + tmin) / 2
+    et = (
+        tmean * ET_COEFF_TEMP
+        + uv * ET_COEFF_UV
+        + wind * ET_COEFF_WIND
+        - humidity * ET_COEFF_HUMIDITY
+    )
+    return max(ET_MIN, min(ET_MAX, round(et, 2)))
 
 
 def calculate_et0_hargreaves(

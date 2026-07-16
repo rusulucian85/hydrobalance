@@ -42,6 +42,27 @@ def test_et0_never_negative():
     assert calc.calculate_et0_hargreaves(-5, -5, 45.0, 15) >= 0.0
 
 
+# ─── ET (legacy weather-based, still selectable) ─────────────────────────────
+
+def test_et_linear_known_value():
+    # Tmean=23.5 → 3.525 + 2.0 + 0.2 − 0.675 = 5.05
+    assert calc.calculate_et_linear(16, 31, 8, 10, 45) == 5.05
+
+
+def test_et_linear_clamped_to_max():
+    assert calc.calculate_et_linear(30, 40, 12, 30, 10) == calc.ET_MAX
+
+
+def test_et_linear_never_negative():
+    assert calc.calculate_et_linear(0, 0, 0, 0, 100) == 0.0
+
+
+def test_et_linear_humidity_reduces():
+    dry = calc.calculate_et_linear(15, 25, 5, 5, 20)
+    humid = calc.calculate_et_linear(15, 25, 5, 5, 90)
+    assert humid < dry
+
+
 # ─── Effective rain ──────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize(
