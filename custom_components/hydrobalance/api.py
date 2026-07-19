@@ -21,6 +21,7 @@ def async_register_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_get_history)
     websocket_api.async_register_command(hass, ws_discover_sensors)
     websocket_api.async_register_command(hass, ws_force_water)
+    websocket_api.async_register_command(hass, ws_run_sequence)
     websocket_api.async_register_command(hass, ws_manual_water)
     websocket_api.async_register_command(hass, ws_skip_day)
     websocket_api.async_register_command(hass, ws_reset_deficit)
@@ -47,6 +48,7 @@ def ws_get_config(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
             "moisture_skip_threshold": coordinator.moisture_skip_threshold,
             "history_retention_days": coordinator.history_retention_days,
             "et_model": coordinator.et_model,
+            "max_concurrent_zones": coordinator.max_concurrent_zones,
             "use_soil_moisture": coordinator.use_soil_moisture,
             "weather_entity": coordinator.weather_entity,
             "weather_primary": coordinator.weather_primary,
@@ -68,6 +70,7 @@ def ws_get_config(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
     vol.Optional("moisture_skip_threshold"): vol.Coerce(float),
     vol.Optional("history_retention_days"): vol.Coerce(int),
     vol.Optional("et_model"): str,
+    vol.Optional("max_concurrent_zones"): vol.Coerce(int),
     vol.Optional("use_soil_moisture"): bool,
     vol.Optional("weather_entity"): vol.Any(str, None),
     vol.Optional("weather_primary"): vol.Any(str, None),
@@ -104,6 +107,8 @@ async def ws_save_config(hass: HomeAssistant, connection: websocket_api.ActiveCo
         coordinator._store_data["history_retention_days"] = msg["history_retention_days"]
     if "et_model" in msg:
         coordinator._store_data["et_model"] = msg["et_model"]
+    if "max_concurrent_zones" in msg:
+        coordinator._store_data["max_concurrent_zones"] = msg["max_concurrent_zones"]
     if "use_soil_moisture" in msg:
         coordinator._store_data["use_soil_moisture"] = msg["use_soil_moisture"]
     if "weather_entity" in msg:
@@ -228,6 +233,20 @@ async def ws_force_water(hass: HomeAssistant, connection: websocket_api.ActiveCo
     """Force watering."""
     for coordinator in hass.data.get(DOMAIN, {}).values():
         await coordinator.async_force_water(msg.get("zone_id"), msg.get("mm"))
+        break
+    connection.send_result(msg["id"], {"success": True})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "hydrobalance/run_sequence",
+    vol.Required("minutes"): vol.Coerce(float),
+    vol.Optional("zone_ids"): [str],
+})
+@websocket_api.async_response
+async def ws_run_sequence(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Run a timed cascade over zones (fixed minutes each), or schedule-next."""
+    for coordinator in hass.data.get(DOMAIN, {}).values():
+        await coordinator.async_run_sequence(msg["minutes"], msg.get("zone_ids"))
         break
     connection.send_result(msg["id"], {"success": True})
 

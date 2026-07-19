@@ -21,6 +21,32 @@ force_water:
           step: 0.5
           unit_of_measurement: mm
 
+run_sequence:
+  name: Run Sequence (timed cascade)
+  description: >-
+    Water zones for a fixed number of minutes each, in cascade, respecting the
+    max-concurrent-zones limit. Useful for watering-in fertilizer. If a run is
+    already in progress, the zones are queued and start as slots free up.
+  fields:
+    minutes:
+      name: Minutes per zone
+      description: How long to run each zone.
+      required: true
+      example: 60
+      selector:
+        number:
+          min: 1
+          max: 360
+          step: 5
+          unit_of_measurement: min
+    zone_ids:
+      name: Zones
+      description: Zone IDs to run. Leave empty for all zones.
+      required: false
+      example: '["back", "mid"]'
+      selector:
+        object:
+
 skip_day:
   name: Skip Day
   description: Skip the next scheduled watering check.

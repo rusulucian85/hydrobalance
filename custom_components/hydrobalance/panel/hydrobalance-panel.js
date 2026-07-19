@@ -27,6 +27,11 @@ const I18N = {
       go_to_zones: 'Go to Zones tab to add watering zones.',
       recent_activity: 'Recent Activity',
       load_more: 'Load more',
+      sequence_title: 'Water all zones — timed cascade',
+      sequence_hint: 'Runs every zone for the same time, in cascade (respecting the concurrency limit). Handy after fertilizing. If a run is active it is queued next.',
+      sequence_min_each: 'min / zone',
+      sequence_run: 'Run cascade',
+      sequence_next: 'Schedule next',
       system: 'System',
       manual_water: 'Manual Water', stop_manual: 'Stop Manual',
       skip_next: 'Skip Next Watering', force_all: 'Force Water All',
@@ -51,6 +56,8 @@ const I18N = {
       history_retention: 'Keep history for (days)',
       save_history: 'Save History Settings',
       soil_strategy: 'Soil & Strategy',
+      max_concurrent: 'Max zones watering at once',
+      max_concurrent_hint: 'How many sprinkler circuits your supply can drive together. 1 = strictly sequential (cascade); 2 = two at a time.',
       et_model: 'ET Calculation Model',
       et_hargreaves: 'Hargreaves ET0 (temperature-based, recommended)',
       et_linear: 'Weather-based (UV + humidity + wind)',
@@ -83,6 +90,11 @@ const I18N = {
       go_to_zones: 'Adaugă o zonă din tab-ul Zone.',
       recent_activity: 'Activitate recentă',
       load_more: 'Încarcă mai mult',
+      sequence_title: 'Udă toate zonele — cascadă cronometrată',
+      sequence_hint: 'Rulează fiecare zonă același timp, în cascadă (respectând limita de concurență). Util după îngrășământ. Dacă ceva rulează deja, se pune la coadă.',
+      sequence_min_each: 'min / zonă',
+      sequence_run: 'Pornește cascada',
+      sequence_next: 'Programează next',
       system: 'Sistem',
       manual_water: 'Udare manuală', stop_manual: 'Oprește manual',
       skip_next: 'Sări peste următoarea udare', force_all: 'Forțează udarea tuturor',
@@ -107,6 +119,8 @@ const I18N = {
       history_retention: 'Păstrează istoricul (zile)',
       save_history: 'Salvează setările istoricului',
       soil_strategy: 'Sol & Strategie',
+      max_concurrent: 'Max zone simultan',
+      max_concurrent_hint: 'Câte circuite de aspersoare poate alimenta sistemul tău simultan. 1 = strict pe rând (cascadă); 2 = două odată.',
       et_model: 'Model de calcul ET',
       et_hargreaves: 'Hargreaves ET0 (bazat pe temperatură, recomandat)',
       et_linear: 'Bazat pe vreme (UV + umiditate + vânt)',
@@ -139,6 +153,11 @@ const I18N = {
       go_to_zones: 'Im Tab Zonen eine Bewässerungszone hinzufügen.',
       recent_activity: 'Letzte Aktivität',
       load_more: 'Mehr laden',
+      sequence_title: 'Alle Zonen bewässern — getaktete Kaskade',
+      sequence_hint: 'Bewässert jede Zone gleich lang, kaskadiert (unter Beachtung des Gleichzeitigkeitslimits). Praktisch nach dem Düngen. Läuft bereits etwas, wird es als Nächstes eingereiht.',
+      sequence_min_each: 'Min / Zone',
+      sequence_run: 'Kaskade starten',
+      sequence_next: 'Als Nächstes',
       system: 'System',
       manual_water: 'Manuell bewässern', stop_manual: 'Manuell stoppen',
       skip_next: 'Nächste Bewässerung überspringen', force_all: 'Alle Zonen jetzt bewässern',
@@ -163,6 +182,8 @@ const I18N = {
       history_retention: 'Verlauf aufbewahren (Tage)',
       save_history: 'Verlaufseinstellungen speichern',
       soil_strategy: 'Boden & Strategie',
+      max_concurrent: 'Max. Zonen gleichzeitig',
+      max_concurrent_hint: 'Wie viele Beregnungskreise deine Versorgung gleichzeitig speisen kann. 1 = strikt nacheinander (Kaskade); 2 = zwei gleichzeitig.',
       et_model: 'ET-Berechnungsmodell',
       et_hargreaves: 'Hargreaves ET0 (temperaturbasiert, empfohlen)',
       et_linear: 'Wetterbasiert (UV + Feuchte + Wind)',
@@ -318,7 +339,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.17.1 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
+        <div class="version">v0.18.0 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
       </div>
       <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development" data-i18n="header.support_btn">&#9829; Support</button>
     </div>
@@ -404,6 +425,17 @@ const TEMPLATE = `
           <button class="btn btn-warning" onclick="window.__hb.skipDay()" data-i18n="dashboard.skip_next">Skip Next Watering</button>
           <button class="btn btn-primary" onclick="window.__hb.forceWater()" data-i18n="dashboard.force_all">Force Water All</button>
           <button class="btn btn-outline" onclick="window.__hb.resetDeficit()" data-i18n="dashboard.reset_all">Reset All Deficits</button>
+        </div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border,rgba(0,0,0,0.1));">
+          <label style="font-weight:600;" data-i18n="dashboard.sequence_title">Water all zones — timed cascade</label>
+          <div style="font-size:0.8em;color:var(--text-secondary);margin:4px 0 8px;" data-i18n="dashboard.sequence_hint">
+            Runs every zone for the same time, in cascade (respecting the concurrency limit). Handy after fertilizing. If a run is active it's queued next.
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input type="number" id="sequence-minutes" value="60" step="5" min="1" max="360" style="width:90px;">
+            <span style="font-size:0.85em;color:var(--text-secondary);" data-i18n="dashboard.sequence_min_each">min / zone</span>
+            <button class="btn btn-primary" id="run-sequence-btn" onclick="window.__hb.runSequence()" data-i18n="dashboard.sequence_run">Run cascade</button>
+          </div>
         </div>
       </div>
     </div>
@@ -493,6 +525,13 @@ const TEMPLATE = `
               <option value="lush_green">Lush Green (8mm / 6mm)</option>
               <option value="clay_safe">Clay-Safe (14mm / 3mm)</option>
             </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label data-i18n="settings.max_concurrent">Max zones watering at once</label>
+          <input type="number" id="max-concurrent" value="1" step="1" min="1" max="20">
+          <div style="font-size:0.8em;color:var(--text-secondary);margin-top:6px;" data-i18n="settings.max_concurrent_hint">
+            How many sprinkler circuits your supply can drive together. 1 = strictly sequential (cascade); 2 = two at a time.
           </div>
         </div>
         <div class="form-group">
@@ -994,6 +1033,15 @@ class HydroBalancePanel extends HTMLElement {
     this._ensureCronTicker();
     this._renderActivity(s.events || []);
     this._renderSystem(s.system || {});
+    this._watering = !!(s.watering && s.watering.active);
+    this._updateSequenceButton(s.watering || {});
+  }
+
+  _updateSequenceButton(w) {
+    const btn = this.$('run-sequence-btn');
+    if (!btn) return;
+    const active = !!w.active;
+    btn.textContent = active ? this.t('dashboard.sequence_next') : this.t('dashboard.sequence_run');
   }
 
   _renderSystem(sys) {
@@ -1240,6 +1288,8 @@ class HydroBalancePanel extends HTMLElement {
     this.$('strategy').value = (entry && entry.strategy) || 'balanced';
     const etModelEl = this.$('et-model');
     if (etModelEl) etModelEl.value = (entry && entry.et_model) || 'hargreaves';
+    const concEl = this.$('max-concurrent');
+    if (concEl) concEl.value = (entry && entry.max_concurrent_zones != null) ? entry.max_concurrent_zones : 1;
 
     const sensors = (entry && entry.sensors) || {};
     this.$('use-soil-moisture').checked = !(entry && entry.use_soil_moisture === false);
@@ -1451,6 +1501,7 @@ class HydroBalancePanel extends HTMLElement {
         soil_type: this.$('soil-type').value,
         strategy: this.$('strategy').value,
         et_model: this.$('et-model').value,
+        max_concurrent_zones: parseInt(this.$('max-concurrent').value, 10) || 1,
       });
       this._toast('Settings saved!');
       await this._loadAll();
@@ -1796,6 +1847,18 @@ class HydroBalancePanel extends HTMLElement {
     try {
       await this._ws('hydrobalance/force_water', zoneId ? { zone_id: zoneId } : {});
       this._toast('Force watering initiated');
+      setTimeout(() => this._loadAll(), 2000);
+    } catch (e) { this._toast('Error: ' + (e.message || e)); }
+  }
+
+  async runSequence() {
+    let minutes = parseFloat(this.$('sequence-minutes').value);
+    if (isNaN(minutes) || minutes < 1) minutes = 60;
+    try {
+      await this._ws('hydrobalance/run_sequence', { minutes });
+      this._toast(this._watering
+        ? `Cascade queued (${minutes} min/zone) — starts after current run`
+        : `Cascade started (${minutes} min/zone)`);
       setTimeout(() => this._loadAll(), 2000);
     } catch (e) { this._toast('Error: ' + (e.message || e)); }
   }

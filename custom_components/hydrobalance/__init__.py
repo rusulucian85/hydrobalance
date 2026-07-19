@@ -95,7 +95,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Remove services and panel if no more entries
     if not hass.data[DOMAIN]:
-        for service in ("force_water", "skip_day", "reset_deficit"):
+        for service in ("force_water", "skip_day", "reset_deficit", "run_sequence"):
             hass.services.async_remove(DOMAIN, service)
         frontend.async_remove_panel(hass, DOMAIN)
 
@@ -120,6 +120,11 @@ def _register_services(hass: HomeAssistant, coordinator: HydroBalanceCoordinator
         zone_id = call.data.get("zone_id")
         await coordinator.async_reset_deficit(zone_id)
 
+    async def handle_run_sequence(call: ServiceCall) -> None:
+        minutes = call.data["minutes"]
+        zone_ids = call.data.get("zone_ids")
+        await coordinator.async_run_sequence(minutes, zone_ids)
+
     hass.services.async_register(
         DOMAIN,
         "force_water",
@@ -142,5 +147,15 @@ def _register_services(hass: HomeAssistant, coordinator: HydroBalanceCoordinator
         handle_reset_deficit,
         schema=vol.Schema({
             vol.Optional("zone_id"): cv.string,
+        }),
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        "run_sequence",
+        handle_run_sequence,
+        schema=vol.Schema({
+            vol.Required("minutes"): vol.Coerce(float),
+            vol.Optional("zone_ids"): [cv.string],
         }),
     )

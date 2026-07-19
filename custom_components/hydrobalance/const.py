@@ -36,6 +36,12 @@ ET_COEFF_HUMIDITY = 0.015
 ET_MIN = 0.0
 ET_MAX = 8.0
 
+# How many zones may water at once (shared supply / flow limit). 1 = strictly
+# sequential (cascade); 2 = two at a time; etc. Set to how many sprinkler
+# circuits your pump/well can drive together without losing pressure.
+CONF_MAX_CONCURRENT_ZONES = "max_concurrent_zones"
+DEFAULT_MAX_CONCURRENT_ZONES = 1
+
 # Selectable ET model (Settings dropdown). "hargreaves" is temperature-only and
 # recommended; "linear" is the legacy weather-based formula (UV/humidity/wind).
 CONF_ET_MODEL = "et_model"

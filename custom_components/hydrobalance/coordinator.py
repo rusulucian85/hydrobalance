@@ -57,6 +57,8 @@ from .const import (
     CONF_MOISTURE_SKIP_THRESHOLD,
     CONF_ET_MODEL,
     DEFAULT_ET_MODEL,
+    CONF_MAX_CONCURRENT_ZONES,
+    DEFAULT_MAX_CONCURRENT_ZONES,
     CONF_ZONE_ID,
     CONF_ZONE_NAME,
     CONF_ZONE_SWITCH,
@@ -120,6 +122,12 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._watering_queue: deque[str] = deque()
         self._watering_active = False
         self._watering_task: asyncio.Task | None = None
+        # Zones whose switch is currently ON via the watering engine, and the
+        # per-zone run overrides (explicit minutes for a timed sequence, and the
+        # trigger label so mixed batches log correctly).
+        self._watering_now: set[str] = set()
+        self._run_minutes: dict[str, float] = {}
+        self._run_trigger: dict[str, str] = {}
         self._skip_next = False
         # Master enable — when False, automatic watering is suspended.
         self._enabled = True
@@ -170,6 +178,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             CONF_MOISTURE_SKIP_THRESHOLD: DEFAULT_MOISTURE_SKIP_THRESHOLD,
             CONF_HISTORY_RETENTION_DAYS: DEFAULT_HISTORY_RETENTION_DAYS,
             CONF_ET_MODEL: DEFAULT_ET_MODEL,
+            CONF_MAX_CONCURRENT_ZONES: DEFAULT_MAX_CONCURRENT_ZONES,
             CONF_USE_SOIL_MOISTURE: DEFAULT_USE_SOIL_MOISTURE,
             CONF_WEATHER_ENTITY: None,
             CONF_WEATHER_PRIMARY: None,
@@ -212,6 +221,17 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def et_model(self) -> str:
         """Selected ET model key ('hargreaves' or 'linear')."""
         return self._store_data.get(CONF_ET_MODEL, DEFAULT_ET_MODEL) or DEFAULT_ET_MODEL
+
+    @property
+    def max_concurrent_zones(self) -> int:
+        """How many zones may water simultaneously (>=1)."""
+        try:
+            v = int(self._store_data.get(
+                CONF_MAX_CONCURRENT_ZONES, DEFAULT_MAX_CONCURRENT_ZONES
+            ))
+        except (TypeError, ValueError):
+            return DEFAULT_MAX_CONCURRENT_ZONES
+        return max(1, v)
 
     @property
     def history_retention_days(self) -> int:
@@ -304,6 +324,9 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             self._store_data[CONF_ET_MODEL] = stored.get(
                 CONF_ET_MODEL, DEFAULT_ET_MODEL
+            )
+            self._store_data[CONF_MAX_CONCURRENT_ZONES] = stored.get(
+                CONF_MAX_CONCURRENT_ZONES, DEFAULT_MAX_CONCURRENT_ZONES
             )
             self._store_data[CONF_USE_SOIL_MOISTURE] = stored.get(
                 CONF_USE_SOIL_MOISTURE, DEFAULT_USE_SOIL_MOISTURE
@@ -494,9 +517,10 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "events": list(self._recent_events)[:100],
             "watering": {
                 "active": self._watering_active,
-                "current_zone": (
-                    self._watering_queue[0] if self._watering_queue else None
-                ),
+                "current_zone": next(iter(sorted(self._watering_now)), None),
+                "current_zones": sorted(self._watering_now),
+                "queued": list(self._watering_queue),
+                "max_concurrent": self.max_concurrent_zones,
                 "skip_next": self._skip_next,
             },
             "soil": {
@@ -1237,139 +1261,193 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         self._current_trigger = "auto"
+        for zid in queue:
+            self._run_trigger[zid] = "auto"
+            self._run_minutes.pop(zid, None)  # deficit-based, not timed
         self._watering_queue = deque(queue)
         self._watering_task = self.hass.async_create_task(
             self._process_watering_queue()
         )
 
     async def _process_watering_queue(self) -> None:
-        """Process the watering queue sequentially."""
+        """Drive the watering queue, running up to max_concurrent_zones at once.
+
+        A pool pattern: keep up to N zone-runner tasks alive; when one finishes,
+        pull the next from the queue. Zones appended to the queue while this is
+        running are picked up as soon as a slot frees — that's how "schedule
+        next" works. The pool exits only when the queue is empty at a point with
+        no pending await, so a late append can't be orphaned.
+        """
         self._watering_active = True
         await self.async_request_refresh()
+        running: dict[asyncio.Task, str] = {}
 
-        while self._watering_queue:
-            zone_id = self._watering_queue[0]
-            zone = self._get_zone_config(zone_id)
-            if zone is None:
-                self._watering_queue.popleft()
-                continue
+        try:
+            while True:
+                # Fill free slots from the pending queue.
+                while self._watering_queue and len(running) < self.max_concurrent_zones:
+                    zid = self._watering_queue.popleft()
+                    zone = self._get_zone_config(zid)
+                    if zone is None or not zone.get(CONF_ZONE_SWITCH):
+                        LOGGER.warning("Zone %s not runnable, skipping", zid)
+                        self._run_minutes.pop(zid, None)
+                        self._run_trigger.pop(zid, None)
+                        continue
+                    task = self.hass.async_create_task(self._run_zone(zid))
+                    running[task] = zid
+                    self._watering_now.add(zid)
 
-            switch_entity = zone.get(CONF_ZONE_SWITCH)
-            if not switch_entity:
-                LOGGER.warning("Zone %s has no switch entity", zone_id)
-                self._watering_queue.popleft()
-                continue
+                if not running:
+                    break  # queue drained and nothing in flight
 
+                await self.async_request_refresh()
+                done, _ = await asyncio.wait(
+                    running, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    zid = running.pop(task)
+                    self._watering_now.discard(zid)
+                    self._run_minutes.pop(zid, None)
+                    self._run_trigger.pop(zid, None)
+                    if task.cancelled():
+                        continue
+                    exc = task.exception()
+                    if exc is not None:
+                        LOGGER.error("Zone %s run errored: %s", zid, exc, exc_info=exc)
+                await self.async_request_refresh()
+        except asyncio.CancelledError:
+            # Whole batch cancelled (e.g. shutdown) — cancel each runner so it
+            # turns its switch off and credits the water delivered so far.
+            for task in list(running):
+                task.cancel()
+            if running:
+                await asyncio.gather(*running, return_exceptions=True)
+            raise
+        finally:
+            self._watering_active = False
+            self._watering_now.clear()
+            await self._persist()
+            await self.async_request_refresh()
+
+    async def _run_zone(self, zone_id: str) -> None:
+        """Water a single zone to completion (one slot in the pool).
+
+        Duration is either an explicit minutes override (timed sequence, e.g.
+        the fertilizer soak) or, by default, derived from the zone's deficit and
+        max-per-cycle. Cycle & soak splits the run into pulses; each pulse
+        credits the delivered water to the deficit, so a mid-run cancellation
+        only forfeits the undelivered part.
+        """
+        zone = self._get_zone_config(zone_id)
+        if zone is None:
+            return
+        switch_entity = zone.get(CONF_ZONE_SWITCH)
+        if not switch_entity:
+            return
+
+        sprinkler_rate = zone.get(CONF_ZONE_SPRINKLER_RATE, DEFAULT_SPRINKLER_RATE)
+        trigger = self._run_trigger.get(zone_id, self._current_trigger)
+
+        forced = self._run_minutes.get(zone_id)
+        if forced is not None:
+            total_minutes = max(1.0, float(forced))
+        else:
             deficit = self._zone_deficits.get(zone_id, 0.0)
             max_per_cycle = zone.get(
                 CONF_ZONE_MAX_PER_CYCLE,
                 self.strategy.get("max_per_cycle", DEFAULT_MAX_PER_CYCLE),
             )
             mm_to_apply = min(deficit, max_per_cycle)
-            sprinkler_rate = zone.get(CONF_ZONE_SPRINKLER_RATE, DEFAULT_SPRINKLER_RATE)
-
             total_minutes = max(1.0, (mm_to_apply / sprinkler_rate) * 30)
 
-            # Cycle & soak splits the run into pulses with rest periods so
-            # water soaks in instead of running off (clay, slopes). When off,
-            # one pulse covers the whole run.
-            if zone.get(CONF_ZONE_CYCLE_SOAK):
-                pulse_minutes = max(
-                    1.0, zone.get(CONF_ZONE_PULSE_MINUTES, DEFAULT_PULSE_MINUTES)
-                )
-                soak_minutes = max(
-                    0.0, zone.get(CONF_ZONE_SOAK_MINUTES, DEFAULT_SOAK_MINUTES)
-                )
-            else:
-                pulse_minutes = total_minutes
-                soak_minutes = 0.0
-
-            LOGGER.info(
-                "Watering zone %s: %.1fmm over %.0f min (pulse=%.0f soak=%.0f, switch=%s)",
-                zone_id, mm_to_apply, total_minutes, pulse_minutes, soak_minutes, switch_entity,
+        # Cycle & soak splits the run into pulses with rest periods so water
+        # soaks in instead of running off (clay, slopes). When off, one pulse
+        # covers the whole run.
+        if zone.get(CONF_ZONE_CYCLE_SOAK):
+            pulse_minutes = max(
+                1.0, zone.get(CONF_ZONE_PULSE_MINUTES, DEFAULT_PULSE_MINUTES)
             )
+            soak_minutes = max(
+                0.0, zone.get(CONF_ZONE_SOAK_MINUTES, DEFAULT_SOAK_MINUTES)
+            )
+        else:
+            pulse_minutes = total_minutes
+            soak_minutes = 0.0
 
-            applied_mm = 0.0
-            remaining = total_minutes
-            cancelled = False
+        LOGGER.info(
+            "Watering zone %s: %.0f min (pulse=%.0f soak=%.0f, trigger=%s, switch=%s)",
+            zone_id, total_minutes, pulse_minutes, soak_minutes, trigger, switch_entity,
+        )
 
-            try:
-                while remaining > 0.01:
-                    run = min(pulse_minutes, remaining)
-                    await self.hass.services.async_call(
-                        "switch", "turn_on", {"entity_id": switch_entity}
-                    )
-                    await self.async_request_refresh()
+        applied_mm = 0.0
+        remaining = total_minutes
+        cancelled = False
 
-                    pulse_start = datetime.now()
-                    try:
-                        await asyncio.sleep(run * 60)
-                        ran_min = run
-                    except asyncio.CancelledError:
-                        ran_min = (
-                            datetime.now() - pulse_start
-                        ).total_seconds() / 60
-                        cancelled = True
+        try:
+            while remaining > 0.01:
+                run = min(pulse_minutes, remaining)
+                await self.hass.services.async_call(
+                    "switch", "turn_on", {"entity_id": switch_entity}
+                )
+                await self.async_request_refresh()
 
-                    # Turn off and credit the water actually delivered, so a
-                    # cancellation mid-run only forfeits the undelivered part.
-                    await self.hass.services.async_call(
-                        "switch", "turn_off", {"entity_id": switch_entity}
-                    )
-                    delivered = (ran_min / 30) * sprinkler_rate
-                    applied_mm += delivered
-                    self._zone_deficits[zone_id] = round(
-                        max(DEFICIT_MIN, self._zone_deficits.get(zone_id, 0.0) - delivered),
-                        1,
-                    )
-                    remaining -= ran_min
+                pulse_start = datetime.now()
+                try:
+                    await asyncio.sleep(run * 60)
+                    ran_min = run
+                except asyncio.CancelledError:
+                    ran_min = (datetime.now() - pulse_start).total_seconds() / 60
+                    cancelled = True
 
-                    if cancelled:
-                        break
-                    if remaining > 0.01 and soak_minutes > 0:
-                        await asyncio.sleep(soak_minutes * 60)
-            except asyncio.CancelledError:
-                # Cancelled during a soak — make sure the switch is off.
+                # Turn off and credit the water actually delivered.
                 await self.hass.services.async_call(
                     "switch", "turn_off", {"entity_id": switch_entity}
                 )
-                cancelled = True
-
-            if cancelled:
-                LOGGER.warning(
-                    "Watering cancelled for zone %s (applied %.1fmm)", zone_id, applied_mm
+                delivered = (ran_min / 30) * sprinkler_rate
+                applied_mm += delivered
+                self._zone_deficits[zone_id] = round(
+                    max(DEFICIT_MIN, self._zone_deficits.get(zone_id, 0.0) - delivered),
+                    1,
                 )
-                self._log_event(
-                    "cancelled",
-                    zone_id=zone_id,
-                    mm=applied_mm,
-                    trigger=self._current_trigger,
-                )
-                break
+                remaining -= ran_min
 
-            LOGGER.info(
-                "Zone %s done. Applied %.1fmm, new deficit: %.1f",
-                zone_id, applied_mm, self._zone_deficits[zone_id],
+                if cancelled:
+                    break
+                if remaining > 0.01 and soak_minutes > 0:
+                    await asyncio.sleep(soak_minutes * 60)
+        except asyncio.CancelledError:
+            # Cancelled during a soak — make sure the switch is off.
+            await self.hass.services.async_call(
+                "switch", "turn_off", {"entity_id": switch_entity}
+            )
+            cancelled = True
+
+        if cancelled:
+            LOGGER.warning(
+                "Watering cancelled for zone %s (applied %.1fmm)", zone_id, applied_mm
             )
             self._log_event(
-                "watered",
-                zone_id=zone_id,
-                mm=applied_mm,
-                minutes=total_minutes,
-                trigger=self._current_trigger,
+                "cancelled", zone_id=zone_id, mm=applied_mm, trigger=trigger
             )
+            return
 
-            self._watering_queue.popleft()
-            await self.async_request_refresh()
-
-        self._watering_active = False
-        await self._persist()
+        LOGGER.info(
+            "Zone %s done. Applied %.1fmm, new deficit: %.1f",
+            zone_id, applied_mm, self._zone_deficits[zone_id],
+        )
+        self._log_event(
+            "watered",
+            zone_id=zone_id,
+            mm=applied_mm,
+            minutes=total_minutes,
+            trigger=trigger,
+        )
         await self.async_request_refresh()
 
     # ─── Services ─────────────────────────────────────────────────────────────
 
     async def async_force_water(self, zone_id: str | None = None, mm: float | None = None) -> None:
-        """Force watering for a zone or all zones."""
+        """Force watering for a zone or all zones (deficit-based, cascaded)."""
         zones = (
             [zone_id] if zone_id else [z[CONF_ZONE_ID] for z in self.zones]
         )
@@ -1378,11 +1456,55 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if zone:
                 max_cycle = zone.get(CONF_ZONE_MAX_PER_CYCLE, DEFAULT_MAX_PER_CYCLE)
                 self._zone_deficits[zid] = mm or max_cycle + DEFAULT_DEFICIT_THRESHOLD
+                self._run_trigger[zid] = "forced"
+                self._run_minutes.pop(zid, None)
         self._current_trigger = "forced"
-        self._watering_queue = deque(zones)
-        self._watering_task = self.hass.async_create_task(
-            self._process_watering_queue()
+        self._enqueue_and_run(zones)
+
+    async def async_run_sequence(
+        self, minutes: float, zone_ids: list[str] | None = None
+    ) -> None:
+        """Water zones for a fixed duration each, respecting the concurrency limit.
+
+        Used for jobs like watering-in fertilizer: every zone runs ``minutes``
+        regardless of its deficit. If a run is already in progress the zones are
+        appended and start as slots free up ("schedule next"); otherwise the run
+        starts now. The delivered water is still credited to each zone's deficit.
+        """
+        ids = zone_ids or [z[CONF_ZONE_ID] for z in self.zones]
+        ids = [
+            zid for zid in ids
+            if (z := self._get_zone_config(zid)) and z.get(CONF_ZONE_SWITCH)
+        ]
+        if not ids:
+            LOGGER.warning("run_sequence: no runnable zones")
+            return
+        for zid in ids:
+            self._run_minutes[zid] = max(1.0, float(minutes))
+            self._run_trigger[zid] = "sequence"
+        self._current_trigger = "sequence"
+        self._enqueue_and_run(ids)
+        LOGGER.info(
+            "Sequence queued: %d zone(s) × %.0f min (concurrency %d)",
+            len(ids), minutes, self.max_concurrent_zones,
         )
+        await self.async_request_refresh()
+
+    def _enqueue_and_run(self, zone_ids: list[str]) -> None:
+        """Append zones to the queue and start the pool if it isn't running.
+
+        If the pool is already active it will pick these up as slots free; if
+        not, a fresh driver task is started. Setting ``_watering_active`` False
+        happens (in the driver's finally) before its awaits, so there's no race
+        where an append is seen as active but then orphaned.
+        """
+        for zid in zone_ids:
+            if zid not in self._watering_queue and zid not in self._watering_now:
+                self._watering_queue.append(zid)
+        if not self._watering_active:
+            self._watering_task = self.hass.async_create_task(
+                self._process_watering_queue()
+            )
 
     async def async_manual_toggle(
         self,
@@ -1607,7 +1729,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _get_zone_status(self, zone: dict[str, Any]) -> str:
         """Get the status string for a zone."""
         zid = zone[CONF_ZONE_ID]
-        if self._watering_active and self._watering_queue and self._watering_queue[0] == zid:
+        if zid in self._watering_now:
             return "watering"
         deficit = self._zone_deficits.get(zid, 0.0)
         threshold = zone.get(
@@ -1666,6 +1788,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             CONF_MOISTURE_SKIP_THRESHOLD: self.moisture_skip_threshold,
             CONF_HISTORY_RETENTION_DAYS: self.history_retention_days,
             CONF_ET_MODEL: self.et_model,
+            CONF_MAX_CONCURRENT_ZONES: self.max_concurrent_zones,
             CONF_USE_SOIL_MOISTURE: self.use_soil_moisture,
             CONF_WEATHER_ENTITY: self._store_data.get(CONF_WEATHER_ENTITY),
             CONF_WEATHER_PRIMARY: self._store_data.get(CONF_WEATHER_PRIMARY),
