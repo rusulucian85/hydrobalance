@@ -1269,6 +1269,62 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._process_watering_queue()
         )
 
+    async def _set_switch(
+        self, entity_id: str, on: bool, retries: int = 3
+    ) -> bool:
+        """Turn a switch on/off and confirm the relay actually flipped.
+
+        Cloud switches (Tuya) occasionally drop a command: the service call
+        returns fine but the relay never moves. We call blocking, then verify
+        the entity state reached the target, retrying a few times. Returns True
+        once confirmed, False if it never got there (relay likely stuck).
+        """
+        service = "turn_on" if on else "turn_off"
+        want = "on" if on else "off"
+        for attempt in range(1, retries + 1):
+            try:
+                await self.hass.services.async_call(
+                    "switch", service, {"entity_id": entity_id}, blocking=True
+                )
+            except Exception as err:  # noqa: BLE001
+                LOGGER.warning(
+                    "switch.%s %s failed (try %d/%d): %s",
+                    service, entity_id, attempt, retries, err,
+                )
+            state = self.hass.states.get(entity_id)
+            if state is not None and state.state == want:
+                return True
+            if attempt < retries:
+                await asyncio.sleep(3)
+        LOGGER.error(
+            "switch %s did not reach '%s' after %d tries — relay may be stuck",
+            entity_id, want, retries,
+        )
+        return False
+
+    async def _close_orphan_switches(self) -> None:
+        """Force-off any managed switch that's on but nobody owns.
+
+        The concurrency limit only holds if every finished zone actually closed
+        its valve. If a turn_off is lost, the relay stays on while the pool moves
+        to the next zone — two sprinklers at once. This sweep, run at each pool
+        hand-off, closes any switch that is on yet not part of an active pool run
+        or manual run, so an orphaned relay can't overlap the next zone.
+        """
+        owned = set(self._watering_now) | set(self._manual_active)
+        for zone in self.zones:
+            zid = zone.get(CONF_ZONE_ID)
+            switch_entity = zone.get(CONF_ZONE_SWITCH)
+            if not switch_entity or zid in owned:
+                continue
+            state = self.hass.states.get(switch_entity)
+            if state and state.state == "on":
+                LOGGER.warning(
+                    "Orphan valve: %s (zone %s) is on but not in an active run — closing",
+                    switch_entity, zid,
+                )
+                await self._set_switch(switch_entity, False)
+
     async def _process_watering_queue(self) -> None:
         """Drive the watering queue, running up to max_concurrent_zones at once.
 
@@ -1314,6 +1370,10 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     exc = task.exception()
                     if exc is not None:
                         LOGGER.error("Zone %s run errored: %s", zid, exc, exc_info=exc)
+                # A finished zone must have closed its valve before the next one
+                # starts. Sweep for any orphaned relay so a lost turn_off can't
+                # overlap the zone we're about to run.
+                await self._close_orphan_switches()
                 await self.async_request_refresh()
         except asyncio.CancelledError:
             # Whole batch cancelled (e.g. shutdown) — cancel each runner so it
@@ -1386,9 +1446,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             while remaining > 0.01:
                 run = min(pulse_minutes, remaining)
-                await self.hass.services.async_call(
-                    "switch", "turn_on", {"entity_id": switch_entity}
-                )
+                await self._set_switch(switch_entity, True)
                 await self.async_request_refresh()
 
                 pulse_start = datetime.now()
@@ -1399,10 +1457,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     ran_min = (datetime.now() - pulse_start).total_seconds() / 60
                     cancelled = True
 
-                # Turn off and credit the water actually delivered.
-                await self.hass.services.async_call(
-                    "switch", "turn_off", {"entity_id": switch_entity}
-                )
+                # Turn off (confirmed) and credit the water actually delivered.
+                await self._set_switch(switch_entity, False)
                 delivered = (ran_min / 30) * sprinkler_rate
                 applied_mm += delivered
                 self._zone_deficits[zone_id] = round(
@@ -1416,11 +1472,15 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if remaining > 0.01 and soak_minutes > 0:
                     await asyncio.sleep(soak_minutes * 60)
         except asyncio.CancelledError:
-            # Cancelled during a soak — make sure the switch is off.
-            await self.hass.services.async_call(
-                "switch", "turn_off", {"entity_id": switch_entity}
-            )
+            # Cancelled during a soak.
             cancelled = True
+        finally:
+            # Guarantee the valve closes however we exit. A dropped turn_off must
+            # never leave this zone's relay on while the pool advances to the
+            # next zone — that's exactly how two sprinklers ended up on at once.
+            state = self.hass.states.get(switch_entity)
+            if state is None or state.state == "on":
+                await self._set_switch(switch_entity, False)
 
         if cancelled:
             LOGGER.warning(
@@ -1532,9 +1592,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if turn_on:
             if zone_id in self._manual_active:
                 return  # already running
-            await self.hass.services.async_call(
-                "switch", "turn_on", {"entity_id": switch_entity}
-            )
+            await self._set_switch(switch_entity, True)
             now = datetime.now()
             self._manual_active[zone_id] = now.isoformat()
             if duration_minutes and duration_minutes > 0:
@@ -1585,9 +1643,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         switch_entity = zone.get(CONF_ZONE_SWITCH) if zone else None
 
         if switch_entity:
-            await self.hass.services.async_call(
-                "switch", "turn_off", {"entity_id": switch_entity}
-            )
+            await self._set_switch(switch_entity, False)
 
         if not start_iso or zone is None:
             return
@@ -1751,9 +1807,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 LOGGER.warning(
                     "Safety: turning off %s (was on after restart)", switch_entity
                 )
-                await self.hass.services.async_call(
-                    "switch", "turn_off", {"entity_id": switch_entity}
-                )
+                await self._set_switch(switch_entity, False)
 
     async def async_save_panel_config(self) -> None:
         """Save panel configuration (called from WebSocket API)."""
