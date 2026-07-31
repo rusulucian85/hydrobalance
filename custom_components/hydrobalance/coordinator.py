@@ -1439,6 +1439,15 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             zone_id, total_minutes, pulse_minutes, soak_minutes, trigger, switch_entity,
         )
 
+        # Log a "started" event so Recent Activity reflects the zone running RIGHT
+        # NOW. Without it the log only gets a "watered" entry when the zone
+        # finishes, so during a cascade the newest line is the previous zone that
+        # just completed — looking like it's the one watering. (see [[switch_control]])
+        self._log_event(
+            "started", zone_id=zone_id, minutes=round(total_minutes), trigger=trigger
+        )
+        await self.async_request_refresh()
+
         applied_mm = 0.0
         remaining = total_minutes
         cancelled = False

@@ -339,7 +339,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.18.1 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
+        <div class="version">v0.18.2 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
       </div>
       <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development" data-i18n="header.support_btn">&#9829; Support</button>
     </div>
@@ -1117,6 +1117,7 @@ class HydroBalancePanel extends HTMLElement {
       return;
     }
     const labels = {
+      started: ['play', 'Watering'],
       watered: ['mdi water', 'Watered'],
       skipped: ['skip', 'Skipped'],
       cancelled: ['stop', 'Cancelled'],
@@ -1134,7 +1135,13 @@ class HydroBalancePanel extends HTMLElement {
     for (const ev of source.slice(0, this._actShown)) {
       const [, label] = labels[ev.kind] || ['', ev.kind];
       let detail = '';
-      if (ev.kind === 'watered') {
+      if (ev.kind === 'started') {
+        const parts = [];
+        if (ev.zone_name) parts.push(this._esc(ev.zone_name));
+        if (ev.minutes != null) parts.push(`~${ev.minutes} min`);
+        if (ev.trigger) parts.push(`(${triggerText[ev.trigger] || ev.trigger})`);
+        detail = parts.join(' · ');
+      } else if (ev.kind === 'watered') {
         const parts = [];
         if (ev.zone_name) parts.push(this._esc(ev.zone_name));
         if (ev.mm != null) parts.push(`${ev.mm} mm`);
