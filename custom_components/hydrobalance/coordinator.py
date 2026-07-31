@@ -128,6 +128,11 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._watering_now: set[str] = set()
         self._run_minutes: dict[str, float] = {}
         self._run_trigger: dict[str, str] = {}
+        # Live pool-run timing for the panel: when the current run of a zone
+        # started and its projected wall-clock finish (ISO), so the card can show
+        # "started HH:MM → ends ~HH:MM" with a live countdown.
+        self._run_started: dict[str, str] = {}
+        self._run_ends: dict[str, str] = {}
         self._skip_next = False
         # Master enable — when False, automatic watering is suspended.
         self._enabled = True
@@ -504,6 +509,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "manual_active": zone[CONF_ZONE_ID] in self._manual_active,
                     "manual_started": self._manual_active.get(zone[CONF_ZONE_ID]),
                     "manual_ends": self._manual_ends.get(zone[CONF_ZONE_ID]),
+                    "run_started": self._run_started.get(zone[CONF_ZONE_ID]),
+                    "run_ends": self._run_ends.get(zone[CONF_ZONE_ID]),
                     "water_used": round(
                         self._zone_water_used.get(zone[CONF_ZONE_ID], 0.0), 1
                     ),
@@ -1365,6 +1372,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._watering_now.discard(zid)
                     self._run_minutes.pop(zid, None)
                     self._run_trigger.pop(zid, None)
+                    self._run_started.pop(zid, None)
+                    self._run_ends.pop(zid, None)
                     if task.cancelled():
                         continue
                     exc = task.exception()
@@ -1386,6 +1395,8 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         finally:
             self._watering_active = False
             self._watering_now.clear()
+            self._run_started.clear()
+            self._run_ends.clear()
             await self._persist()
             await self.async_request_refresh()
 
@@ -1438,6 +1449,19 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "Watering zone %s: %.0f min (pulse=%.0f soak=%.0f, trigger=%s, switch=%s)",
             zone_id, total_minutes, pulse_minutes, soak_minutes, trigger, switch_entity,
         )
+
+        # Wall-clock finish includes the soak rests between pulses (the switch is
+        # off during a soak, but the run isn't done until the last pulse ends).
+        if soak_minutes > 0 and pulse_minutes > 0:
+            pulses = max(1, math.ceil(total_minutes / pulse_minutes))
+            wall_minutes = total_minutes + (pulses - 1) * soak_minutes
+        else:
+            wall_minutes = total_minutes
+        run_start = datetime.now()
+        self._run_started[zone_id] = run_start.isoformat()
+        self._run_ends[zone_id] = (
+            run_start + timedelta(minutes=wall_minutes)
+        ).isoformat()
 
         # Log a "started" event so Recent Activity reflects the zone running RIGHT
         # NOW. Without it the log only gets a "watered" entry when the zone

@@ -17,6 +17,7 @@ const I18N = {
       building: 'Building', watering: 'Watering', manual: 'Manual',
       pending_recalc: 'Pending recalc', soil_wet: 'Soil wet',
     },
+    run: { started: 'Started', ends: 'ends', open_ended: 'open-ended' },
     dashboard: {
       todays_data: "Today's Data",
       et: 'ET (mm)', rain: 'Rain (mm)', eff_rain: 'Eff. Rain (mm)',
@@ -80,6 +81,7 @@ const I18N = {
       building: 'Crește', watering: 'Udare în curs', manual: 'Manual',
       pending_recalc: 'Recalc. în așteptare', soil_wet: 'Sol ud',
     },
+    run: { started: 'Pornit', ends: 'termină', open_ended: 'fără limită' },
     dashboard: {
       todays_data: 'Date azi',
       et: 'ET (mm)', rain: 'Ploaie (mm)', eff_rain: 'Ploaie ef. (mm)',
@@ -143,6 +145,7 @@ const I18N = {
       building: 'Steigt', watering: 'Bewässert', manual: 'Manuell',
       pending_recalc: 'Neuberechnung steht aus', soil_wet: 'Boden nass',
     },
+    run: { started: 'Start', ends: 'endet', open_ended: 'offen' },
     dashboard: {
       todays_data: 'Heutige Daten',
       et: 'ET (mm)', rain: 'Regen (mm)', eff_rain: 'Eff. Regen (mm)',
@@ -339,7 +342,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.18.2 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
+        <div class="version">v0.18.3 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
       </div>
       <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development" data-i18n="header.support_btn">&#9829; Support</button>
     </div>
@@ -996,9 +999,24 @@ class HydroBalancePanel extends HTMLElement {
       const barColor = pct > 80 ? 'var(--danger)' : pct > 50 ? 'var(--warning)' : 'var(--success)';
 
       const manualEnds = zdata.manual_ends || '';
-      const cron = manualActive
-        ? `<span class="hb-cron" data-start="${this._esc(manualStarted)}" data-end="${this._esc(manualEnds)}" style="font-variant-numeric:tabular-nums;color:var(--danger);font-weight:600;">00:00</span>${manualEnds ? '<span style="font-size:0.75em;color:var(--text-secondary);margin-left:6px;">left</span>' : ''}`
-        : '';
+      // One place that shows a running zone's start clock, projected finish, and
+      // a live countdown — for both manual runs and the auto/pool cascade.
+      const runStart = manualActive ? manualStarted : (zdata.run_started || '');
+      const runEnd = manualActive ? manualEnds : (zdata.run_ends || '');
+      const isRunning = !!runStart && (manualActive || zoneStatus === 'watering');
+      let runInfo = '';
+      if (isRunning) {
+        const startClk = this._fmtClock(runStart);
+        const endClk = runEnd ? this._fmtClock(runEnd) : '';
+        const ticker = runEnd
+          ? `<span class="hb-cron" data-end="${this._esc(runEnd)}" style="font-variant-numeric:tabular-nums;color:var(--danger);font-weight:600;">00:00</span> <span style="font-size:0.8em;">left</span>`
+          : `<span class="hb-cron" data-start="${this._esc(runStart)}" style="font-variant-numeric:tabular-nums;color:var(--danger);font-weight:600;">00:00</span> <span style="font-size:0.8em;">elapsed</span>`;
+        runInfo = `<div style="margin-top:10px;font-size:0.9em;color:var(--text-secondary);display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+            <span>💧 ${this.t('run.started')} <strong>${startClk}</strong>${endClk ? ` &rarr; ${this.t('run.ends')} ~<strong>${endClk}</strong>` : ` · ${this.t('run.open_ended')}`}</span>
+            <span>·</span>
+            ${ticker}
+          </div>`;
+      }
 
       html += `
         <div class="zone-card">
@@ -1020,12 +1038,12 @@ class HydroBalancePanel extends HTMLElement {
           <div class="progress-bar">
             <div class="fill" style="width:${pct}%;background:${barColor}"></div>
           </div>
+          ${runInfo}
           <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
             <button class="btn btn-sm ${manualActive ? 'btn-danger' : 'btn-outline'}"
               onclick="window.__hb.${manualActive ? `manualWater('${this._esc(zid)}', false)` : `openManualModal('${this._esc(zid)}')`}">
               ${manualActive ? 'Stop Manual' : 'Manual Water'}
             </button>
-            ${cron}
           </div>
         </div>`;
     }
@@ -1191,6 +1209,13 @@ class HydroBalancePanel extends HTMLElement {
     }
     this._actShown += 20;
     this._renderActivityList();
+  }
+
+  _fmtClock(iso) {
+    const t = Date.parse(iso);
+    if (isNaN(t)) return '';
+    const d = new Date(t);
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
   }
 
   _relTime(iso) {
