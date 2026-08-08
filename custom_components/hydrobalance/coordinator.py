@@ -1520,7 +1520,12 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "Watering cancelled for zone %s (applied %.1fmm)", zone_id, applied_mm
             )
             self._log_event(
-                "cancelled", zone_id=zone_id, mm=applied_mm, trigger=trigger
+                "cancelled",
+                zone_id=zone_id,
+                mm=applied_mm,
+                minutes=total_minutes - remaining,
+                trigger=trigger,
+                start=run_start.isoformat(),
             )
             return
 
@@ -1534,6 +1539,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             mm=applied_mm,
             minutes=total_minutes,
             trigger=trigger,
+            start=run_start.isoformat(),
         )
         await self.async_request_refresh()
 
@@ -1705,6 +1711,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             mm=mm_applied,
             minutes=elapsed_min,
             trigger="manual",
+            start=start_iso,
         )
 
     async def async_skip_day(self) -> None:
@@ -1783,6 +1790,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         minutes: float | None = None,
         trigger: str | None = None,
         reason: str | None = None,
+        start: str | None = None,
     ) -> None:
         """Record an event: update usage counters, ring buffer, and fire on the bus.
 
@@ -1800,6 +1808,7 @@ class HydroBalanceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         event: dict[str, Any] = {
             "time": now_iso,
+            "start": start,
             "kind": kind,
             "zone_id": zone_id,
             "zone_name": self._zone_label(zone_id),

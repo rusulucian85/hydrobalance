@@ -18,6 +18,11 @@ const I18N = {
       pending_recalc: 'Pending recalc', soil_wet: 'Soil wet',
     },
     run: { started: 'Started', ends: 'ends', open_ended: 'open-ended' },
+    log: {
+      zone: 'Zone', start: 'Start', stop: 'Stop', duration: 'Duration',
+      running: 'running…', skipped: 'Skipped', cancelled: 'cancelled',
+      today: 'Today', yesterday: 'Yesterday',
+    },
     dashboard: {
       todays_data: "Today's Data",
       et: 'ET (mm)', rain: 'Rain (mm)', eff_rain: 'Eff. Rain (mm)',
@@ -82,6 +87,11 @@ const I18N = {
       pending_recalc: 'Recalc. în așteptare', soil_wet: 'Sol ud',
     },
     run: { started: 'Pornit', ends: 'termină', open_ended: 'fără limită' },
+    log: {
+      zone: 'Zonă', start: 'Start', stop: 'Stop', duration: 'Durată',
+      running: 'în curs…', skipped: 'Sărit', cancelled: 'anulat',
+      today: 'Azi', yesterday: 'Ieri',
+    },
     dashboard: {
       todays_data: 'Date azi',
       et: 'ET (mm)', rain: 'Ploaie (mm)', eff_rain: 'Ploaie ef. (mm)',
@@ -146,6 +156,11 @@ const I18N = {
       pending_recalc: 'Neuberechnung steht aus', soil_wet: 'Boden nass',
     },
     run: { started: 'Start', ends: 'endet', open_ended: 'offen' },
+    log: {
+      zone: 'Zone', start: 'Start', stop: 'Stopp', duration: 'Dauer',
+      running: 'läuft…', skipped: 'Übersprungen', cancelled: 'abgebrochen',
+      today: 'Heute', yesterday: 'Gestern',
+    },
     dashboard: {
       todays_data: 'Heutige Daten',
       et: 'ET (mm)', rain: 'Regen (mm)', eff_rain: 'Eff. Regen (mm)',
@@ -315,6 +330,21 @@ const STYLES = `
   .sensor-item .sensor-value { font-weight: 500; }
   .sensor-item .sensor-value.found { color: var(--success); }
   .sensor-item .sensor-value.missing { color: var(--danger); }
+  .hb-log { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+  .hb-log th {
+    text-align: left; color: var(--text-secondary); font-weight: 500;
+    padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  .hb-log td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .hb-log tr:last-child td { border-bottom: none; }
+  .hb-log .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .hb-log .zone { font-weight: 500; }
+  .hb-log .muted { color: var(--text-secondary); }
+  .hb-log .sub { display: block; font-size: 0.85em; color: var(--text-secondary); margin-top: 2px; }
+  .hb-log .day td {
+    padding: 12px 8px 4px; color: var(--text-secondary); font-size: 0.8em;
+    text-transform: uppercase; letter-spacing: 0.04em; border-bottom: none; font-weight: 600;
+  }
   .modal-overlay {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(0,0,0,0.5); display: flex; align-items: center;
@@ -342,7 +372,7 @@ const TEMPLATE = `
     <div class="header">
       <div style="flex:1;">
         <h1>HydroBalance</h1>
-        <div class="version">v0.18.3 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
+        <div class="version">v0.19.0 &mdash; <span data-i18n="header.tagline">Smart Irrigation</span></div>
       </div>
       <button class="btn btn-sm btn-outline" style="align-self:flex-start;" onclick="window.__hb.openSupportModal()" title="Support development" data-i18n="header.support_btn">&#9829; Support</button>
     </div>
@@ -1134,12 +1164,6 @@ class HydroBalancePanel extends HTMLElement {
       this._updateLoadMore();
       return;
     }
-    const labels = {
-      started: ['play', 'Watering'],
-      watered: ['mdi water', 'Watered'],
-      skipped: ['skip', 'Skipped'],
-      cancelled: ['stop', 'Cancelled'],
-    };
     const triggerText = { auto: 'auto', forced: 'forced', manual: 'manual' };
     const reasonText = {
       frost: 'frost protection',
@@ -1149,35 +1173,68 @@ class HydroBalancePanel extends HTMLElement {
       disabled: 'system disabled',
       rain_delay: 'rain delay / vacation',
     };
-    let html = '';
+    const dash = '<span class="muted">&mdash;</span>';
+    const zoneCell = (ev, extra) => {
+      const name = ev.zone_name ? this._esc(ev.zone_name) : dash;
+      const bits = [];
+      if (ev.trigger) bits.push(triggerText[ev.trigger] || ev.trigger);
+      if (ev.mm != null) bits.push(`${ev.mm} mm`);
+      if (extra) bits.push(extra);
+      const sub = bits.length ? `<span class="sub">${this._esc(bits.join(' · '))}</span>` : '';
+      return `<td class="zone">${name}${sub}</td>`;
+    };
+    const dur = (m) => (m != null ? `${Math.round(m)} min` : dash);
+
+    // A "started" event and its later "watered"/"cancelled" event are two log
+    // entries for the same run. Collapse them: show a run as a single row, and
+    // only render a standalone "started" row while it's genuinely still going
+    // (no terminal event for that zone seen higher up the newest-first list).
+    const closed = new Set();
+    let rows = '';
+    let lastDay = '';
     for (const ev of source.slice(0, this._actShown)) {
-      const [, label] = labels[ev.kind] || ['', ev.kind];
-      let detail = '';
-      if (ev.kind === 'started') {
-        const parts = [];
-        if (ev.zone_name) parts.push(this._esc(ev.zone_name));
-        if (ev.minutes != null) parts.push(`~${ev.minutes} min`);
-        if (ev.trigger) parts.push(`(${triggerText[ev.trigger] || ev.trigger})`);
-        detail = parts.join(' · ');
-      } else if (ev.kind === 'watered') {
-        const parts = [];
-        if (ev.zone_name) parts.push(this._esc(ev.zone_name));
-        if (ev.mm != null) parts.push(`${ev.mm} mm`);
-        if (ev.minutes != null) parts.push(`${ev.minutes} min`);
-        if (ev.trigger) parts.push(`(${triggerText[ev.trigger] || ev.trigger})`);
-        detail = parts.join(' · ');
-      } else if (ev.kind === 'skipped') {
-        detail = reasonText[ev.reason] || ev.reason || '';
-      } else if (ev.kind === 'cancelled') {
-        detail = ev.zone_name ? this._esc(ev.zone_name) : '';
+      if (ev.kind === 'watered' || ev.kind === 'cancelled') closed.add(ev.zone_id);
+      if (ev.kind === 'started' && closed.has(ev.zone_id)) continue;
+
+      const day = this._fmtDay(ev.time);
+      if (day !== lastDay) {
+        rows += `<tr class="day"><td colspan="4">${this._esc(day)}</td></tr>`;
+        lastDay = day;
       }
-      html += `
-        <div class="sensor-item">
-          <span class="sensor-name">${this._esc(label)} ${detail ? '· ' + detail : ''}</span>
-          <span class="sensor-value">${this._esc(this._relTime(ev.time))}</span>
-        </div>`;
+
+      if (ev.kind === 'skipped') {
+        const reason = reasonText[ev.reason] || ev.reason || '';
+        rows += `<tr>${zoneCell(ev)}<td class="num">${this._fmtClock(ev.time)}</td>` +
+          `<td class="muted" colspan="2">${this.t('log.skipped')}${reason ? ' · ' + this._esc(reason) : ''}</td></tr>`;
+        continue;
+      }
+
+      if (ev.kind === 'started') {
+        rows += `<tr>${zoneCell(ev)}<td class="num">${this._fmtClock(ev.start || ev.time)}</td>` +
+          `<td class="num muted">${this.t('log.running')}</td>` +
+          `<td class="num"><span class="hb-cron" data-start="${this._esc(ev.start || ev.time)}">00:00</span></td></tr>`;
+        continue;
+      }
+
+      // watered / cancelled — a completed run on one row
+      const extra = ev.kind === 'cancelled' ? this.t('log.cancelled') : '';
+      rows += `<tr>${zoneCell(ev, extra)}` +
+        `<td class="num">${ev.start ? this._fmtClock(ev.start) : dash}</td>` +
+        `<td class="num">${this._fmtClock(ev.time)}</td>` +
+        `<td class="num">${dur(ev.minutes)}</td></tr>`;
     }
-    container.innerHTML = html;
+
+    container.innerHTML = `
+      <table class="hb-log">
+        <thead><tr>
+          <th>${this.t('log.zone')}</th>
+          <th class="num">${this.t('log.start')}</th>
+          <th class="num">${this.t('log.stop')}</th>
+          <th class="num">${this.t('log.duration')}</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    this._ensureCronTicker();
     this._updateLoadMore();
   }
 
@@ -1216,6 +1273,17 @@ class HydroBalancePanel extends HTMLElement {
     if (isNaN(t)) return '';
     const d = new Date(t);
     return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  _fmtDay(iso) {
+    const t = Date.parse(iso);
+    if (isNaN(t)) return '';
+    const d = new Date(t); d.setHours(0, 0, 0, 0);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const diff = Math.round((today - d) / 86400000);
+    if (diff === 0) return this.t('log.today');
+    if (diff === 1) return this.t('log.yesterday');
+    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
   }
 
   _relTime(iso) {
